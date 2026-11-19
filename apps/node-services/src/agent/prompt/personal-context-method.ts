@@ -26,6 +26,27 @@ export function renderPersonalContextMethod(
   ].join("\n");
 }
 
+/** Compact personal context gathering method for small-window or local models. */
+export function renderCompactPersonalContextMethod(
+  connectedApps: boolean,
+  connectedAppKeys: readonly string[],
+): string {
+  const connected = new Set(connectedApps ? connectedAppKeys : []);
+  const apps = COMPACT_APP_SOURCES.flatMap(({ keys, render }) => {
+    const present = keys.filter((key) => connected.has(key));
+    return present.length > 0 ? [render(present)] : [];
+  });
+  const listed = new Set(COMPACT_APP_SOURCES.flatMap(({ keys }) => keys));
+  const others = [...connected].filter((key) => !listed.has(key));
+  if (others.length > 0) apps.push(compactOtherApps(others));
+  return [
+    COMPACT_METHOD,
+    ...apps,
+    COMPACT_SHARED,
+    "</personal-context-method>",
+  ].join("\n");
+}
+
 const METHOD = `<personal-context-method>
 When an answer depends on facts about the Human's own work and life, gather them this way.
 1. Start from what is already here: memory.md when your instructions carry it, this conversation, and the Agent Memory index.
@@ -84,3 +105,46 @@ const SHARED = `- Tracking Items (teamhub tracking-items list): open commitments
 
 const WEB =
   "- web: prices, availability, schedules and public facts, checked now.";
+
+const COMPACT_METHOD = `<personal-context-method>
+For facts about the Human's own work and life:
+1. Start from memory.md (when present), this conversation, and the Agent Memory index.
+2. Search knowledge first; query live or external sources only for missing facts or changing facts (dates, meetings, roles, contacts, amounts, deadlines, status).
+3. Verify each changing fact once in its owning live source from the held record's date to now; report updates or say it is unconfirmed, and never claim a check you didn't run.
+4. Check each link when chaining facts across sources; weigh recency and authority when sources disagree.
+5. Lead with the answer, note what wasn't checked, carry constraints into later steps or Tasks, and never send, book, or buy without approval.
+Sources:`;
+
+const COMPACT_APP_SOURCES: readonly {
+  readonly keys: readonly string[];
+  readonly render: (present: readonly string[]) => string;
+}[] = [
+  {
+    keys: ["google_calendar"],
+    render: () =>
+      "- calendar (teamhub gcal list / free / read): events, attendees, free time.",
+  },
+  {
+    keys: ["gmail", "outlook"],
+    render: (present) =>
+      `- mail (${present.map((key) => MAIL_COMMANDS[key]).join(" or ")} list / read): latest emails, invites, replies, and attachments since last knowledge import.`,
+  },
+  {
+    keys: ["slack"],
+    render: () =>
+      "- Slack (teamhub slack search / read): recent team discussion.",
+  },
+  {
+    keys: ["googledrive", "notion", "github"],
+    render: (present) =>
+      `- ${present.map((key) => DOCUMENT_SOURCES[key]).join(", ")} search / read: docs, code, issues.`,
+  },
+];
+
+function compactOtherApps(keys: readonly string[]): string {
+  return `- other connected apps (${keys.join(", ")}): teamhub apps search "<action and app>" then teamhub apps execute.`;
+}
+
+const COMPACT_SHARED = `- Tracking Items (teamhub tracking-items list): open commitments and deadlines.
+- Routines (teamhub routine list): scheduled reminders and checks.
+- web: live public facts, prices, and schedules.`;
