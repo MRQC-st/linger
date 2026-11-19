@@ -226,6 +226,16 @@ A menu item in the read, such as File > Put Back, can be clicked directly; do no
 Before the first shell screenshot, or when one fails or comes back blank, run ` + "`teamhub computer permissions status`" + `; if Screen Recording is missing for Linger, run ` + "`teamhub computer permissions request --permissions screen_recording`" + ` and end your turn — the card wakes you. Never operate System Settings or privacy prompts yourself.
 ` + browserToolGuide
 
+// MacToolGuideCompact summarizes the macOS computer and browser MCP tools for
+// small-context or local models so Turn 1 stays lean while keeping critical
+// safety and discovery rules intact.
+const MacToolGuideCompact = `Computer tools on this Mac (MCP server "computer"; load via tool_search when deferred):
+- Use launch_app({bundle_id, urls?}) and list_windows({pid}) to open or inspect apps; get_window_state({pid, window_id?, since?: "latest", query?, max_depth?}) reads UI elements as element_token "<snapshot_id>:N".
+- Batch planned inputs with run_actions({actions: [...], read?}) or repeat multi-item flows with run_script({script}); call bring_to_front({pid, window_id}) when a window must be raised.
+- Call report_blocker({kind, url}) immediately on captchas, login walls, verification checks, rate limits, or unavailable content; never try to bypass checks.
+- Before shell screenshots (or if blank), run ` + "`teamhub computer permissions status`" + ` and if Screen Recording is missing, run ` + "`teamhub computer permissions request --permissions screen_recording`" + ` and end the turn. Never operate System Settings or privacy prompts yourself.
+` + browserToolGuide
+
 // browserToolGuide lists the Playwright browser tools, which Codex also defers.
 const browserToolGuide = `Browser tools (MCP server "browser", when present): browser_navigate({url}), browser_snapshot() reads the page with element refs, browser_click({target}) and browser_type({target, text, submit?}) act on a ref from the latest snapshot, browser_tabs({action: "list" | "new" | "select" | "close"}). Each action returns the page snapshot after it, so call browser_snapshot only to read a page you have not changed.`
 

@@ -285,6 +285,7 @@ func run(args []string) (resultErr error) {
 		toolBinder, piExtension = toolManager, toolInstallation.PiExtension
 		if runtime.GOOS == "darwin" {
 			resolver.ToolGuide = localtools.MacToolGuide
+			resolver.CompactToolGuide = localtools.MacToolGuideCompact
 		} else if runtime.GOOS == "linux" {
 			resolver.ToolGuide = localtools.NativeLinuxToolGuide
 		}

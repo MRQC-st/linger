@@ -217,8 +217,15 @@ Computer user's own instruction files:
   projection left is removed. `instructions`, `developer_instructions`,
   `model_instructions_file` and `experimental_instructions_file` are dropped
   from the projected `config.toml` and its profiles.
-- Pi runs with `--no-context-files` and an empty `--system-prompt`, so it keeps
-  its built-in prompt instead of the user's `SYSTEM.md`.
+- Pi runs with `--no-context-files` and an empty `--system-prompt`, so it never
+  reads the user's `SYSTEM.md`. When the Computer tools' managed Pi extension
+  (`extensions/pi-mcp.mjs`) is installed, Pi loads it on every managed run to
+  replace Pi's built-in docs preamble with a compact deterministic preamble,
+  sort and bound verbose skill descriptions on small-window (`<= 128K`) and
+  local (`localmodels/*`, `localmodels-library/*`) models, defer MCP server
+  tools behind `tool_search` with static `<mcp_servers>` descriptions for KV
+  prefix stability, and cap compaction reasoning effort and summary/retention
+  budgets on small-window and local models.
 - Antigravity is the exception: its ACP server has no switch that turns off
   the user's own rules, skills and `~/.gemini/config/mcp_config.json`, so an
   Antigravity run sees them next to the Daemon's instructions and servers.
@@ -464,7 +471,8 @@ On macOS, `click` takes `delivery_mode: "foreground"` and `action`: the first fo
 
 Every Operation's developer instructions carry a list of the Computer tools, so
 the model need not search the tool catalog before its first call; macOS uses
-`MacToolGuide`, with the call shapes of the browser tools. For Codex the Runtime
+`MacToolGuide` (or `MacToolGuideCompact` for `<= 128K` and local models), with
+the call shapes of the browser tools. For Codex the Runtime
 sets the Daemon's own `computer` and `browser` servers to
 `omit_tools_from = ["code_mode", "deferred"]`, only on Codex 0.163.0 and later;
 earlier Codex does not know the field and keeps the tools in code mode. The two

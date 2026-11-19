@@ -266,6 +266,52 @@ func TestExecutionResolverAppendsToolGuide(t *testing.T) {
 	}
 }
 
+func TestExecutionResolverSelectsCompactToolGuideForSmallAndLocalModels(t *testing.T) {
+	cases := []struct {
+		name          string
+		model         string
+		contextWindow int
+		wantGuide     string
+	}{
+		{name: "small window uses compact", model: "vendor/small", contextWindow: 65536, wantGuide: "CompactGuide"},
+		{name: "128k window uses compact", model: "vendor/mid", contextWindow: 131072, wantGuide: "CompactGuide"},
+		{name: "200k localmodels uses compact", model: "localmodels/spark-x2.6-4b", contextWindow: 200000, wantGuide: "CompactGuide"},
+		{name: "200k localmodels-library uses compact", model: "localmodels-library/qwen3.8-27b", contextWindow: 200000, wantGuide: "CompactGuide"},
+		{name: "large cloud model uses full", model: "anthropic/claude-opus", contextWindow: 200000, wantGuide: "FullGuide"},
+		{name: "unknown cloud model uses full", model: "gpt-5", contextWindow: 0, wantGuide: "FullGuide"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			windows := map[string]int{}
+			if tc.contextWindow > 0 {
+				windows[tc.model] = tc.contextWindow
+			}
+			resolver := ExecutionResolver{
+				Providers: map[string]ProviderInstallation{
+					"pi": {Type: "pi", ExecutablePath: "/local/bin/pi", ContextWindows: windows},
+				},
+				WorkspaceGrants: map[string]WorkspaceGrant{"grant-local": {GrantID: "grant-local", TenantID: "tenant-acme", Path: "/local/workspace"}},
+				Views:           testContextViews{root: "/local/workspace"},
+				Registrations: map[string]RegistrationBinding{
+					"registration-pi": {RegistrationID: "registration-pi", TenantID: "tenant-acme", OwnerActorID: "actor-alice", ProviderType: "pi", Status: registration.StatusOnline},
+				},
+				ToolGuide:        "FullGuide",
+				CompactToolGuide: "CompactGuide",
+			}
+			spec, err := resolver.Resolve(context.Background(), protocol.Command{
+				TenantID: "tenant-acme", RegistrationID: "registration-pi", AssignmentRevision: 1,
+				WorkspaceGrantID: "grant-local", RuntimeType: "pi", ContextViewRef: json.RawMessage(`{"receipt_ref":"receipt-1"}`),
+			}, json.RawMessage(`{"kind":"run.start","runtime":{"type":"pi","model":"`+tc.model+`"},"session_options":{"base_instructions":"Base","developer_instructions":"Developer"},"session":{"session_id":"session-1"},"input":{"type":"text","text":"Go"}}`))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if spec.DeveloperInstructions == nil || *spec.DeveloperInstructions != "Developer\n\n"+tc.wantGuide {
+				t.Fatalf("got %v, want Developer\\n\\n%s", spec.DeveloperInstructions, tc.wantGuide)
+			}
+		})
+	}
+}
+
 // Claude defers its web tools behind ToolSearch, so every Claude Operation
 // names them; Codex has its own web_search and gets nothing.
 func TestExecutionResolverNamesClaudeWebTools(t *testing.T) {
