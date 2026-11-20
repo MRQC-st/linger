@@ -97,7 +97,7 @@ describe("document normalization", () => {
         mediaType: "text/html; charset=utf-8",
         source: encode("<h1>Title</h1><p>Hello <b>world</b></p>"),
       }).then(decode),
-    ).resolves.toBe("# Title\n\nHello world\n");
+    ).resolves.toBe("# Title\n\nHello **world**\n");
 
     await expect(
       normalizeDocumentContent({

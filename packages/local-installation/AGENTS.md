@@ -30,7 +30,7 @@ Each instance directory holds `user.env` (0600), the only file a person edits:
 (`user-environment.ts`). Every mode merges it into the generated
 `compose.env` / `native.env` over a developer checkout's `.env` and under the
 installer's own values; other names are ignored with a warning, and the file
-is created from a template once and never rewritten. The desktop source
+is created from a template once; ordinary reads never rewrite it. The desktop source
 package's `.env` is not read. Voice keys are normally saved in the app
 (TeamHub); a key in `user.env` overrides it. Whenever the distribution has
 voice tools for this computer, Native prepares them and runs LiveKit with
@@ -39,6 +39,14 @@ voice key; without them, or when they fail to prepare, TeamHub gets
 `TEAMHUB_VOICE_MEDIA=off` and the install continues. The services' `voice`
 setting tracks only the tools, so a key change never restarts them through
 it. A native process restarts when its generated environment changes.
+
+Adopting a legacy environment keeps nonempty values already set in `user.env`.
+Adoption and saved key updates recognize plain, exported and whitespace-formatted
+assignments through the same helper. Each changed key replaces its first assignment
+in place and removes later duplicates, or is appended once when absent. This keeps
+values beside their template comments without duplicate secret values. The legacy
+file is removed only after the private atomic write completes.
+
 Generated native values preserve quoted paths and literal backslashes by
 checking their complete dotenv file with the launcher's parser. Multiline,
 NUL-containing or otherwise unrepresentable values fail before publishing
@@ -68,9 +76,13 @@ Every update or recreate path stops node-services on its own, right before
 TeamHub restarts (natively: for a changed configuration) and while TeamHub is
 still up, so its graceful shutdown requeues in-flight Agent Runs.
 
+`inspectSetup` keeps tool downloads and state in `home`; `targetHome`, when
+provided, selects the installation paths to inspect independently of that cache.
+
 The home is `LINGER_HOME`, else `~/.simplexai` (`home.ts`). Installs from
 before the product was renamed Linger convert once in
-`legacy-migration.ts`, which the installer runs before it opens the home and
+`legacy-migration.ts`, which the installer runs before it opens the home (except
+inspection and stop modes) and
 the desktop runs through `installer.js --migrate`. Under each instance's lock
 it stops the instance's Computer and native services, renames `SIMPLEX_*`
 keys in the generated env files, and gives the instance its
@@ -96,6 +108,15 @@ it to `native/postgres-data` only once it succeeds, so a killed `initdb`
 never leaves a directory that later attempts treat as initialized. A `postgres-data` with
 `PG_VERSION` but no `postmaster.opts` (which only a started server writes)
 never served a connection, holds no data, and is initialized again.
+
+On Windows the installer stages UTF-8 application manifests beside the bundled
+PostgreSQL tools before recording their file hashes. This lets `initdb`
+relaunch itself and start `postgres` when the profile path contains characters
+outside the system code page. This copy uses the `<archive digest>-utf8`
+component directory so older installers can still verify their own cache.
+Both copies use the same instance data directory and the same executable path
+in the supervisor's configuration hash. A matching live server keeps its
+connections during the upgrade. Its next start uses the UTF-8 copy.
 
 The desktop's bundled TeamHub binaries (`teamhub-binaries.ts`) count as current
 only when their files still match the manifest's sizes and hashes. A missing
@@ -278,8 +299,17 @@ through `onRuntimeDescriptors` so callers avoid a second status probe. Within
 dependency and voice tool preparations stay sequential on the shared
 native-tools lock; collaboration services start concurrently when `node-services`
 is not pre-stopped for a TeamHub config restart. `runLocalmodels`
-forwards `harness apply` `download:retrying` and `total: null` byte progress
-(without a total), and `prepareByokRuntime` logs elapsed time every 10 s while mounting
+reads the kit's JSON event lines from stdout and stderr alike and forwards
+byte progress (`total: null` without a total) and the download
+`connecting`, `switching` and `retrying` stages of every command, labeled per
+command; a host is shown only when it is a plain hostname, and unknown states
+are ignored. `harness apply` also forwards its extract, verify and install
+stages. Setup's `source apply` (`prepareByokRuntime`, `applyNativeSource`) may
+download Bifrost first, so it forwards these events and has no wall-clock
+limit: `idleTimeoutMs` (240 s, above the kit's longest silent span, the BYOK
+endpoint probe of up to about 35 s followed by Bifrost's health wait of up to
+180 s) stops it only after that long with no output. The resume mount
+keeps its 90 s wall clock. `prepareByokRuntime` logs elapsed time every 10 s while mounting
 the BYOK gateway (a log line, since the job appends and persists every stage
 event).
 
