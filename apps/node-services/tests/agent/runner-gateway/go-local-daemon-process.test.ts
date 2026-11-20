@@ -1,3 +1,5 @@
+import { createRuntimeModelCall } from "../../../src/runtime-model-call.js";
+import { runtimeModelGateway } from "../../../src/agent/runner-gateway/runtime-model-gateway.js";
 import { createLocalContextRuntimeBackend } from "../../../src/agent/executor/local-backend.js";
 import {
   createContextRuntimeActivator,
@@ -276,6 +278,249 @@ const publishContextView = async (
   cleanups.push(async () => snapshot.release());
   return snapshot.viewDigest;
 };
+
+processTest(
+  "runs Memory and Wiki on a Pi-only Daemon with whatever model Pi defaults to",
+  async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "go-daemon-pi-model-"));
+    const computerId = "computer-pi-background";
+    const owner = {
+      tenantId: "tenant-pi-background",
+      ownerActorId: "human-pi-background",
+    };
+    const anotherMe = {
+      tenantId: owner.tenantId,
+      agentActorId: "actor-pi-background",
+    };
+    const piModel = "fixture-local/model";
+    const token = runnerToken(computerId, owner.tenantId, owner.ownerActorId);
+    const gateway = createTestRunnerGateway({
+      computerDaemonIdentityVerifier: createComputerDaemonIdentityVerifier(),
+    });
+    testRegistryOf(gateway).enroll({ computerId, ...owner });
+    const model = createRuntimeModelCall({
+      gateway: runtimeModelGateway(gateway),
+      placements: async () => [
+        {
+          ...owner,
+          computerId,
+          runtimeType: "pi",
+          agentId: "agent-pi-background",
+          agentActorId: anotherMe.agentActorId,
+        },
+      ],
+    });
+    const inputs: string[] = [];
+    const sessionErrors: string[] = [];
+    const server = createServer((request, response) => {
+      if (request.method !== "POST" || request.url !== "/v1/chat/completions") {
+        response.writeHead(404).end();
+        return;
+      }
+      let input = "";
+      request.setEncoding("utf8").on("data", (chunk: string) => {
+        input += chunk;
+      });
+      request.once("end", () => {
+        inputs.push(input);
+        const content = input.includes("Memory fixture evidence")
+          ? '{"answer":"memory"}'
+          : "Wiki fixture reply.";
+        const chunk = (delta: object, finish_reason: string | null) =>
+          JSON.stringify({
+            id: "fixture",
+            object: "chat.completion.chunk",
+            created: 1,
+            model: "model",
+            choices: [{ index: 0, delta, finish_reason }],
+          });
+        response
+          .writeHead(200, { "content-type": "text/event-stream" })
+          .end(
+            `data: ${chunk({ role: "assistant", content }, null)}\n\ndata: ${chunk({}, "stop")}\n\ndata: [DONE]\n\n`,
+          );
+      });
+    });
+    const handle = attachRunnerGatewayWebSocket({
+      server,
+      gateway,
+      onSessionError: (error) => sessionErrors.push(String(error)),
+      credentialAuthenticators: [
+        createTestRunnerCredentialAuthority([
+          {
+            runnerId: computerId,
+            token,
+            credentialGeneration: 0,
+            tenantOwners: [owner],
+          },
+        ]),
+      ],
+    });
+    let child: ChildProcess | undefined;
+    try {
+      await new Promise<void>((resolve) =>
+        server.listen(0, "127.0.0.1", resolve),
+      );
+      const port = (server.address() as AddressInfo).port;
+      const pi = path.resolve(
+        process.cwd(),
+        "../computer/node_modules/.bin/pi",
+      );
+      const binary = path.join(root, "bin", "linger-computer-daemon");
+      const config = path.join(root, "computer.json");
+      const profile = path.join(root, ".pi", "agent");
+      const credential = path.join(root, "runner-token");
+      await mkdir(profile, { recursive: true });
+      await Promise.all([
+        installDaemonBinary(binary),
+        writeFile(credential, token, { mode: 0o600 }),
+        writeFile(
+          path.join(profile, "settings.json"),
+          JSON.stringify({
+            defaultProvider: "fixture-local",
+            defaultModel: "model",
+          }),
+        ),
+        writeFile(
+          path.join(profile, "models.json"),
+          JSON.stringify({
+            providers: {
+              "fixture-local": {
+                baseUrl: `http://127.0.0.1:${port}/v1`,
+                api: "openai-completions",
+                apiKey: "fixture",
+                models: [{ id: "model" }],
+              },
+              // Stands in for the person's own endpoint and API key.
+              "fixture-own-key": {
+                baseUrl: `http://127.0.0.1:${port}/v1`,
+                api: "openai-completions",
+                apiKey: "fixture-own-key",
+                models: [{ id: "hosted" }],
+              },
+            },
+          }),
+        ),
+        writeFile(
+          config,
+          JSON.stringify({
+            runner_id: computerId,
+            display_name: "Pi background fixture",
+            gateway: {
+              url: `ws://127.0.0.1:${port}/v1/runner-gateway`,
+              token_file: credential,
+            },
+            state_directory: path.join(root, "daemon-state"),
+            enabled_runtimes: ["pi"],
+            runtime_paths: { pi },
+            workspace_grants: [
+              {
+                grant_id: "grant-pi-fixture",
+                tenant_id: owner.tenantId,
+                mode: "workspace-write",
+                scope: "owner",
+                root_path: root,
+              },
+            ],
+          }),
+          { mode: 0o600 },
+        ),
+      ]);
+      let stderr = "";
+      child = startDaemon(
+        binary,
+        config,
+        root,
+        (value) => {
+          stderr += value;
+        },
+        [path.dirname(process.execPath), "/usr/bin", "/bin"],
+      );
+      await vi.waitFor(
+        () => {
+          if (sessionErrors.length)
+            throw new Error(
+              `Pi daemon Gateway error: ${sessionErrors[0]}; ${stderr}`,
+            );
+          expect(gateway.supportsModelInvoke(computerId, "pi"), stderr).toBe(
+            true,
+          );
+        },
+        { timeout: 15_000 },
+      );
+      expect(gateway.supportsModelInvoke(computerId, "codex")).toBe(false);
+      expect(gateway.supportsModelInvoke(computerId, "claude")).toBe(false);
+      const signal = AbortSignal.timeout(20_000);
+      await expect(
+        model.chain(
+          { kind: "memory", key: "fixture-facts", owner, signal },
+          (chain) =>
+            chain.call({
+              step: "extract",
+              input: "Memory fixture evidence",
+              schemaName: "fact",
+              outputSchema: {
+                type: "object",
+                required: ["answer"],
+                properties: { answer: { type: "string" } },
+              },
+            }),
+        ),
+      ).resolves.toEqual({ output: { answer: "memory" }, model: piModel });
+      await expect(
+        model.chain(
+          { kind: "wiki", key: "fixture-wiki", anotherMe, signal },
+          (chain) =>
+            chain.text({ step: "write", input: "Wiki fixture evidence" }),
+        ),
+      ).resolves.toEqual({ output: "Wiki fixture reply.", model: piModel });
+      expect(inputs).toHaveLength(2);
+      expect(inputs[1]).toContain("Wiki fixture evidence");
+      // Background calls follow Pi's default, whichever provider serves it.
+      await writeFile(
+        path.join(profile, "settings.json"),
+        JSON.stringify({
+          defaultProvider: "fixture-own-key",
+          defaultModel: "hosted",
+        }),
+      );
+      await expect(
+        model.chain(
+          { kind: "wiki", key: "fixture-own-key", anotherMe, signal },
+          (chain) => chain.text({ step: "write", input: "Own key evidence" }),
+        ),
+      ).resolves.toEqual({
+        output: "Wiki fixture reply.",
+        model: "fixture-own-key/hosted",
+      });
+      expect(inputs).toHaveLength(3);
+      expect(inputs[2]).toContain("Own key evidence");
+      expect(inputs.every((input) => !input.includes('"tools":[{'))).toBe(true);
+    } finally {
+      model.close();
+      try {
+        if (child && child.exitCode === null && child.signalCode === null) {
+          const exited = new Promise<void>((resolve) =>
+            child!.once("exit", () => resolve()),
+          );
+          child.kill("SIGTERM");
+          const timer = setTimeout(() => child?.kill("SIGKILL"), 3_000);
+          try {
+            await within(exited, "Pi daemon cleanup", 5_000);
+          } finally {
+            clearTimeout(timer);
+          }
+        }
+      } finally {
+        await handle.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+        await rm(root, { recursive: true, force: true });
+      }
+    }
+  },
+  60_000,
+);
 
 // Real daemon, trusted file-install protocol and standalone CLI processes;
 // TeamHub HTTP and the native provider are deterministic fixtures, without PG.
@@ -877,6 +1122,7 @@ processTest(
           );
         }
         const registrations = connections.at(-1)?.hello.runtime_registrations;
+        // Antigravity is not installed here, so the hello leaves it out.
         expect(registrations).toHaveLength(3);
         const claude = registrations?.find(
           ({ provider_type }) => provider_type === "claude",

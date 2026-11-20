@@ -9,7 +9,7 @@ export type { Region };
 
 // The record localmodels shares: see scripts/installs/README.md.
 export const REGION_SCHEMA = "simplex.region/v1";
-const STALE_MS = 7 * 24 * 60 * 60_000;
+const STALE_MS = 24 * 60 * 60_000;
 export interface RegionRecord {
   schema: typeof REGION_SCHEMA;
   region: Region;
@@ -77,7 +77,12 @@ async function save(
 }
 
 // One resolution per home and process, so concurrent downloads share a probe.
-const resolutions = new Map<string, Promise<Region>>();
+interface Resolution {
+  promise: Promise<Region>;
+  controller: AbortController | undefined;
+  waiters: number;
+}
+const resolutions = new Map<string, Resolution>();
 
 async function resolve(
   file: string,
@@ -106,28 +111,54 @@ async function resolve(
 
 /**
  * The download region of `home`: SIMPLEX_REGION when it names one, else a
- * region.json resolved within the last 7 days, else the npm registry probe
- * (cn when the China mirror delivers more). Resolved once per process.
+ * region.json resolved within the last 24 hours, else the npm registry probe
+ * (cn when the China mirror wins). Resolved once per process.
  */
-export function resolveRegion(
+export async function resolveRegion(
   home: string,
   options: { signal?: AbortSignal; fetcher?: typeof fetch } = {},
 ): Promise<Region> {
+  const signal = options.signal;
+  signal?.throwIfAborted();
   const file = regionFile(home);
   let pending = resolutions.get(file);
   if (!pending) {
-    pending = resolve(
-      file,
-      options.signal ?? new AbortController().signal,
-      options.fetcher ?? fetch,
+    const controller = new AbortController();
+    const resolution: Resolution = {
+      promise: resolve(file, controller.signal, options.fetcher ?? fetch),
+      controller,
+      waiters: 0,
+    };
+    resolutions.set(file, resolution);
+    resolution.promise.then(
+      () => {
+        resolution.controller = undefined;
+      },
+      () => {
+        resolution.controller = undefined;
+        if (resolutions.get(file) === resolution) resolutions.delete(file);
+      },
     );
-    resolutions.set(file, pending);
-    // An aborted probe leaves nothing behind; the next caller probes again.
-    pending.catch(() => {
-      if (resolutions.get(file) === pending) resolutions.delete(file);
-    });
+    pending = resolution;
   }
-  return pending;
+  pending.waiters++;
+  let onAbort: (() => void) | undefined;
+  try {
+    if (!signal) return await pending.promise;
+    const aborted = new Promise<never>((_resolve, reject) => {
+      onAbort = () => reject(signal.reason);
+      signal.addEventListener("abort", onAbort, { once: true });
+    });
+    return await Promise.race([pending.promise, aborted]);
+  } finally {
+    if (signal && onAbort) signal.removeEventListener("abort", onAbort);
+    pending.waiters--;
+    // A cancelled setup leaves the shared probe running for other setups.
+    if (pending.waiters === 0 && pending.controller) {
+      if (resolutions.get(file) === pending) resolutions.delete(file);
+      pending.controller.abort();
+    }
+  }
 }
 
 /**
@@ -141,9 +172,13 @@ export async function recordRegionFallback(
 ): Promise<void> {
   if (forcedRegion()) return;
   const file = regionFile(home);
-  const current = await resolutions.get(file)?.catch(() => undefined);
+  const current = await resolutions.get(file)?.promise.catch(() => undefined);
   if (current === region) return;
-  resolutions.set(file, Promise.resolve(region));
+  resolutions.set(file, {
+    promise: Promise.resolve(region),
+    controller: undefined,
+    waiters: 0,
+  });
   await save(file, region, "fallback");
 }
 

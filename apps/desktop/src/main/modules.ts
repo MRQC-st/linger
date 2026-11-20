@@ -31,6 +31,8 @@ export interface BusEvents {
   "runtime.activity": [running: number];
   "runtime.state": [state: string];
   "server.changed": [serverUrl: string];
+  // The same server answers at another origin; enrollments follow it.
+  "server.moved": [from: string, to: string];
   "setup.open": [];
   "status.changed": [status: { tone: string; label: string }];
   "update.changed": [state: string];

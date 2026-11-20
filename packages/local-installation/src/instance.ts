@@ -8,6 +8,7 @@ import {
 } from "./private-files.js";
 import { LEGACY_PROJECT_PREFIX, lingerHome } from "./home.js";
 import { freePort, portFree } from "./ports.js";
+import { readLiveKitSettings } from "./native-livekit.js";
 import path from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { parseEnv } from "node:util";
@@ -206,6 +207,10 @@ export async function initializeInstance(
             reserved.add(other.port);
             for (const port of Object.values(other.source?.ports ?? {}))
               reserved.add(port);
+            const livekit = await readLiveKitSettings(other.root).catch(
+              () => undefined,
+            );
+            if (livekit) reserved.add(livekit.httpPort).add(livekit.rtcPort);
           }
         }
         if (options.port !== undefined && reserved.has(options.port))

@@ -12,12 +12,15 @@ import type {
   ModelSourceStatus,
 } from "@linger/wire-contracts/runner-gateway/types";
 
-export type LocalRuntimeType = "claude" | "codex" | "pi";
+export type LocalRuntimeType = "claude" | "codex" | "pi" | "antigravity";
 
 export const isSupportedLocalRuntimeType = (
   value: unknown,
 ): value is LocalRuntimeType =>
-  value === "codex" || value === "claude" || value === "pi";
+  value === "codex" ||
+  value === "claude" ||
+  value === "pi" ||
+  value === "antigravity";
 // A Computer below this release is refused with `upgrade_required` and the
 // user reruns the installer.
 export const MINIMUM_COMPUTER_VERSION = "0.22.0";
@@ -39,9 +42,15 @@ export const FIRST_MODEL_INVOKE_CANCEL_COMPUTER_VERSION = "0.53.0";
 // The first release that runs `model_source` commands. An older Computer
 // closes the connection on a command kind it cannot decode.
 export const FIRST_MODEL_SOURCE_COMPUTER_VERSION = "0.54.0";
+// Older Daemons do not decode Pi as a model_invoke Runtime.
+export const FIRST_PI_MODEL_INVOKE_COMPUTER_VERSION = "0.55.0";
+// The first release that decodes a BYOK path, endpoint and protocol and
+// reports them back. An older Computer closes the connection on a byok input
+// that carries them, so it gets no BYOK command and no `byok_endpoint`.
+export const FIRST_BYOK_ENDPOINT_COMPUTER_VERSION = "0.56.0";
 // The first release that decodes `no_autoload` on `execute` `local_models`.
 // An older Computer rejects the unknown key and closes the connection.
-export const FIRST_LOCAL_MODEL_DOWNLOAD_ONLY_COMPUTER_VERSION = "0.55.0";
+export const FIRST_LOCAL_MODEL_DOWNLOAD_ONLY_COMPUTER_VERSION = "0.57.0";
 
 const COMPUTER_RELEASE_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
@@ -110,6 +119,13 @@ export const DEFAULT_LOCAL_RUNTIME_MODELS: LocalRuntimeModelCatalog = {
   ],
   codex: [
     { id: "codex-default", label: "Codex default", allowedReasoningEffort: [] },
+  ],
+  antigravity: [
+    {
+      id: "antigravity-default",
+      label: "Antigravity default",
+      allowedReasoningEffort: [],
+    },
   ],
 };
 
@@ -484,7 +500,7 @@ export const runtimeModelCatalogForComputer = (
     LocalRuntimeType,
     readonly LocalRuntimeModelDefinition[]
   >;
-  for (const runtimeType of ["claude", "codex", "pi"] as const) {
+  for (const runtimeType of ["claude", "codex", "pi", "antigravity"] as const) {
     const diagnostic = hello.runtime_diagnostics.find(
       ({ type }) => type === runtimeType,
     );
@@ -528,7 +544,7 @@ export const validateRuntimeModelCatalog = (
     LocalRuntimeType,
     readonly LocalRuntimeModelDefinition[]
   >;
-  for (const runtimeType of ["claude", "codex", "pi"] as const) {
+  for (const runtimeType of ["claude", "codex", "pi", "antigravity"] as const) {
     const models = catalog[runtimeType];
     const ids = new Set<string>();
     if (!Array.isArray(models) || models.length > 100) {

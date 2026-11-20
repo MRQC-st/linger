@@ -2,14 +2,22 @@ import { revokeFoundationGpuSharing } from "./foundation-services.js";
 import { randomUUID } from "node:crypto";
 import { rm } from "node:fs/promises";
 import path from "node:path";
+import { sleep } from "@linger/service-kit";
 import {
   atomicPrivate,
+  INSTANCE_BUSY,
   privateDirectory,
   readPrivate,
   withInstanceLock,
   type Instance,
 } from "./instance.js";
 import type { InstallOutcome, InstallerEvent } from "./events.js";
+import {
+  applyNativeSource,
+  mountSavedByokSource,
+  readByokEnvironment,
+  type ByokGatewayFailure,
+} from "./byok-source.js";
 import { localmodelsFailure } from "./localmodels-failure.js";
 import { runLocalmodels } from "./localmodels-tool.js";
 import {
@@ -51,6 +59,30 @@ interface Options {
 }
 interface Dependencies {
   localmodels?: typeof runLocalmodels;
+}
+interface RestoreDependencies extends Dependencies {
+  // How long a restore waits for another holder of the stack's lock, and
+  // how often it tries again.
+  lockWaitMs?: number;
+  lockRetryMs?: number;
+}
+// A little above the quit-time stop's 150 s hard exit, so a reopen during
+// that stop sees where it left the stack.
+const LOCK_WAIT_MS = 180_000;
+/**
+ * Runs `callback` holding the lock every deployment, restore check and
+ * quit-time stop of a home's local model stack takes, so none of them sees
+ * the stack half changed. Throws `INSTANCE_BUSY` at once when another holds
+ * it; the caller creates `<home>/runtime/localmodels` first.
+ */
+export function withLocalModelsLock<T>(
+  home: string,
+  callback: () => Promise<T>,
+): Promise<T> {
+  return withInstanceLock(
+    { root: path.join(path.resolve(home), "runtime/localmodels") } as Instance,
+    callback,
+  );
 }
 // What each stack component downloads, as the setup page names it.
 const DOWNLOADS: Record<string, string> = {
@@ -219,18 +251,43 @@ export async function localModelsEnvironment(
     LINGER_LOCAL_MODELS_REVISION: b.pi.configFingerprint,
   };
 }
-export async function hasSavedLocalModelsPlan(home: string): Promise<boolean> {
+// The saved plan's ID, or undefined when no plan was saved.
+async function savedPlanID(home: string): Promise<string | undefined> {
   const raw = await readPrivate(
     path.join(home, "runtime/localmodels/plan.json"),
   );
-  if (!raw) return false;
+  if (!raw) return undefined;
   const saved = JSON.parse(raw) as { schema?: string; plan_id?: string };
   if (
     saved.schema !== "localmodels.stack-plan/v1" ||
     !/^[a-f0-9]{64}$/.test(saved.plan_id ?? "")
   )
     throw new Error("Invalid saved upstream plan.");
-  return true;
+  return saved.plan_id;
+}
+export async function hasSavedLocalModelsPlan(home: string): Promise<boolean> {
+  return (await savedPlanID(home)) !== undefined;
+}
+// What localmodels reports about the plan's deployed stack and its Pi, or
+// null when it could not tell.
+async function observeBinding(
+  planFile: string,
+  planID: string,
+  command: (
+    args: string[],
+  ) => Promise<{ code: number; stdout: string; stderr: string }>,
+): Promise<Binding | null> {
+  const result = await command([
+    "setup",
+    "binding",
+    "--plan",
+    planFile,
+    "--lang",
+    "en",
+    "--json",
+  ]);
+  if (result.code !== 0) return null;
+  return binding(JSON.parse(result.stdout), planID);
 }
 export async function reviewSavedModelPlan(
   home: string,
@@ -280,7 +337,7 @@ export async function prepareLocalModels(
     inputsFile = path.join(root, "plan-inputs.json");
   await privateDirectory(root);
   await privateDirectory(path.join(root, "models"));
-  return withInstanceLock({ root } as Instance, async () => {
+  return withLocalModelsLock(home, async () => {
     let saved = await readPrivate(planFile);
     if (options.shareGpu === false) {
       try {
@@ -413,18 +470,8 @@ export async function prepareLocalModels(
     const bindFile = path.join(root, "binding.json");
     const previous = await readPrivate(bindFile);
     const observe = async () => {
-      const result = await command([
-        "setup",
-        "binding",
-        "--plan",
-        planFile,
-        "--lang",
-        "en",
-        "--json",
-      ]);
-      if (result.code !== 0) return null;
-      const observed = binding(JSON.parse(result.stdout), summary.planId);
-      reasons = observed.ready ? [] : reasonCodes(observed);
+      const observed = await observeBinding(planFile, summary.planId, command);
+      if (observed) reasons = observed.ready ? [] : reasonCodes(observed);
       return observed;
     };
     let inputs:
@@ -510,4 +557,119 @@ export async function prepareLocalModels(
       message: "The upstream local model stack and Pi connection are ready.",
     });
   });
+}
+// Runs `callback` under the local model lock, waiting for another holder.
+// Returns undefined when the wait runs out.
+async function waitForLocalModelsLock<T>(
+  home: string,
+  callback: () => Promise<T>,
+  signal: AbortSignal,
+  dependencies: RestoreDependencies,
+): Promise<{ value: T } | undefined> {
+  const deadline = Date.now() + (dependencies.lockWaitMs ?? LOCK_WAIT_MS);
+  for (;;) {
+    try {
+      return { value: await withLocalModelsLock(home, callback) };
+    } catch (error) {
+      if ((error as { code?: unknown }).code !== INSTANCE_BUSY) throw error;
+      if (Date.now() >= deadline) return undefined;
+      await sleep(dependencies.lockRetryMs ?? 1000, signal);
+    }
+  }
+}
+
+/**
+ * Brings back the Bifrost gateway of a saved BYOK source, which the
+ * desktop's quit stops with the stack. A failure is logged and returned,
+ * never thrown: failing the resume would block the whole local workspace,
+ * including the Models page that switches the source. Returns undefined
+ * when there was nothing to do or the gateway is up.
+ */
+export async function restoreByokSource(
+  home: string,
+  options: { signal: AbortSignal; onEvent: (e: InstallerEvent) => void },
+  dependencies: RestoreDependencies & { fetch?: typeof fetch } = {},
+): Promise<ByokGatewayFailure | undefined> {
+  const source = await readByokEnvironment(home);
+  if (source?.mode !== "byok") return undefined;
+  // The quit-time stop holds the lock while it takes the gateway down, so a
+  // gateway that answers before it ends is not proof that it stays up.
+  const held = await waitForLocalModelsLock(
+    home,
+    () => mountSavedByokSource(home, source, options, dependencies),
+    options.signal,
+    dependencies,
+  );
+  const failure: ByokGatewayFailure | undefined = held
+    ? held.value
+    : {
+        code: "LOCAL_MODELS_BUSY",
+        message: "Another local model operation is still running.",
+      };
+  if (failure)
+    options.onEvent({
+      kind: "log",
+      message: `${failure.message} (${failure.code}) Agents cannot reach the model until the endpoint is reachable and the BYOK source is applied again on the Models page, or Linger restarts.`,
+    });
+  return failure;
+}
+
+/**
+ * Brings back the local model stack of a local-models setup whose services
+ * still run, such as when Linger opens again after a quit stopped the
+ * models. Only while the Computer's model source is local: a person who
+ * switched to a subscription or BYOK keeps that choice. A ready stack costs
+ * one binding check; otherwise this applies the approved plan again and makes
+ * the stack the model source. Returns the outcome when the restore fails.
+ */
+export async function restoreLocalModels(
+  instance: Instance,
+  options: { signal: AbortSignal; onEvent: (e: InstallerEvent) => void },
+  dependencies: RestoreDependencies = {},
+): Promise<InstallOutcome | undefined> {
+  if ((await readSetupChoice(instance)) !== "local-models") return;
+  const home = path.resolve(instance.root, "../..");
+  // Installs from earlier releases may have no model source saved yet; their
+  // source is the local stack they set up.
+  const source = await readByokEnvironment(home);
+  if (source && source.mode !== "local") return;
+  const planID = await savedPlanID(home);
+  if (!planID) return;
+  const invoke = dependencies.localmodels ?? runLocalmodels;
+  const observe = () =>
+    observeBinding(
+      path.join(home, "runtime/localmodels/plan.json"),
+      planID,
+      (args) =>
+        invoke(home, args, { signal: options.signal, timeoutMs: 120000 }),
+    );
+  // A quit-time stop may still hold the lock; checking before it ends would
+  // see a stack it is about to take down.
+  const held = await waitForLocalModelsLock(
+    home,
+    observe,
+    options.signal,
+    dependencies,
+  );
+  if (!held)
+    return {
+      code: 4,
+      state: "action_required",
+      message:
+        "Another local model operation is still running. Try again once it ends.",
+      details: { code: "LOCAL_MODELS_RECOVERY_REQUIRED" },
+    };
+  const observed = held.value;
+  if (observed?.ready) return;
+  // prepareLocalModels takes the lock itself, and the lock is not reentrant.
+  return (
+    (await prepareLocalModels(instance, options, dependencies)) ??
+    (await applyNativeSource(
+      home,
+      "local",
+      "pi",
+      { signal: options.signal, onEvent: options.onEvent },
+      dependencies,
+    ))
+  );
 }

@@ -8,7 +8,6 @@ import {
   mkdtempSync,
   readFileSync,
   rmSync,
-  statSync,
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
@@ -88,6 +87,8 @@ describe("desktop-release.sh checksums", () => {
     const files = [...required, `Linger-${version}-windows-x64-portable.zip`];
     for (const name of files) writeFileSync(join(dir, name), name);
     writeFileSync(join(dir, "Linger-0.16.32-macos-arm64.dmg"), "older");
+    writeFileSync(join(dir, "install.sh"), "#!/bin/sh\n");
+    writeFileSync(join(dir, "install.ps1"), "# ps1\n");
 
     const result = run(["checksums", dir, version]);
 
@@ -346,7 +347,7 @@ describe("desktop-release.sh github-release", () => {
     expect(result.calls).not.toContain("abc123");
   });
 
-  it("marks a stable release as the latest", () => {
+  it("creates a stable release as a draft without marking it latest", () => {
     const dir = folder();
     const bin = folder();
     const log = join(dir, "gh.log");
@@ -364,7 +365,11 @@ describe("desktop-release.sh github-release", () => {
     });
 
     expect(result.status).toBe(0);
-    expect(readFileSync(log, "utf8")).toContain("--latest");
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toContain("--draft");
+    expect(calls).not.toContain("--latest");
+    expect(calls).not.toContain("--prerelease");
+    expect(result.stdout).toContain("publish desktop-v1.0.0 --notes-file");
   });
 
   it("needs LINGER_RELEASE_TOKEN to publish from another repository", () => {
@@ -386,73 +391,106 @@ describe("desktop-release.sh github-release", () => {
   });
 });
 
-describe("desktop-release.sh install-scripts", () => {
-  const version = "0.16.33";
-
-  it("exports verified install.sh and install.ps1 and covers them in SHA256SUMS.txt", () => {
+describe("desktop-release.sh publish", () => {
+  function setupPublish(assets: string[], rcTags: string[] = []) {
     const dir = folder();
-    for (const suffix of [
-      "macos-arm64.dmg",
-      "linux-x64.tar.gz",
-      "windows-x64-setup.exe",
-    ]) {
-      writeFileSync(join(dir, `Linger-${version}-${suffix}`), suffix);
-    }
-
-    const exported = run(["install-scripts", dir, version]);
-    expect(exported.status).toBe(0);
-    expect(exported.stdout).toContain(
-      `copied install.sh and install.ps1 for ${version}`,
+    const bin = folder();
+    const log = join(dir, "gh.log");
+    const assetsFile = join(dir, "assets.txt");
+    const rcFile = join(dir, "rc-tags.txt");
+    writeFileSync(assetsFile, assets.length ? `${assets.join("\n")}\n` : "");
+    writeFileSync(rcFile, rcTags.length ? `${rcTags.join("\n")}\n` : "");
+    writeFileSync(
+      join(bin, "gh"),
+      [
+        "#!/bin/sh",
+        `echo "$*" >>"${log}"`,
+        'if [ "$2" = view ]; then',
+        `  cat "${assetsFile}"`,
+        "  exit 0",
+        "fi",
+        'if [ "$2" = list ]; then',
+        `  cat "${rcFile}"`,
+        "  exit 0",
+        "fi",
+        "exit 0",
+        "",
+      ].join("\n"),
     );
-    expect(statSync(join(dir, "install.sh")).mode & 0o111).toBe(0o111);
-    expect(existsSync(join(dir, "install.ps1"))).toBe(true);
+    chmodSync(join(bin, "gh"), 0o755);
+    const notes = join(dir, "notes.md");
+    writeFileSync(notes, "Linger Desktop 1.0.0\n\n## Highlights\n\n- Works.\n");
+    return { bin, log, notes };
+  }
 
-    const sums = run(["checksums", dir, version]);
-    expect(sums.status).toBe(0);
-    const checksumText = readFileSync(join(dir, "SHA256SUMS.txt"), "utf8");
-    const shHash = createHash("sha256")
-      .update(readFileSync(join(process.cwd(), "scripts/install/install.sh")))
-      .digest("hex");
-    const ps1Hash = createHash("sha256")
-      .update(readFileSync(join(process.cwd(), "scripts/install/install.ps1")))
-      .digest("hex");
-    expect(checksumText).toContain(`${shHash}  install.sh\n`);
-    expect(checksumText).toContain(`${ps1Hash}  install.ps1\n`);
+  it("publishes a stable draft with notes as latest and removes matching RC prereleases", () => {
+    const { bin, log, notes } = setupPublish(
+      [
+        "Linger-1.0.0-macos-arm64.dmg",
+        "Linger-1.0.0-linux-x64.tar.gz",
+        "Linger-1.0.0-windows-x64-setup.exe",
+        "SHA256SUMS.txt",
+      ],
+      ["desktop-v1.0.0-rc.0", "desktop-v1.0.0-rc.1"],
+    );
+
+    const result = run(["publish", "desktop-v1.0.0", "--notes-file", notes], {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    });
+
+    expect(result.status).toBe(0);
+    const calls = readFileSync(log, "utf8");
+    expect(calls).toContain(
+      "release view desktop-v1.0.0 --repo simplexai-labs/linger --json assets --jq .assets[].name",
+    );
+    expect(calls).toContain(
+      `release edit desktop-v1.0.0 --repo simplexai-labs/linger --notes-file ${notes} --draft=false --latest`,
+    );
+    expect(calls).toContain(
+      'release list --repo simplexai-labs/linger --limit 100 --json tagName,isPrerelease,isDraft --jq .[] | select(.isPrerelease and (.isDraft | not) and (.tagName | startswith("desktop-v1.0.0-rc."))) | .tagName',
+    );
+    expect(calls).toContain(
+      "release delete desktop-v1.0.0-rc.0 --repo simplexai-labs/linger --cleanup-tag --yes",
+    );
+    expect(calls).toContain(
+      "release delete desktop-v1.0.0-rc.1 --repo simplexai-labs/linger --cleanup-tag --yes",
+    );
   });
 
-  it("refuses install-scripts when standalone pins drift from scripts/installs", () => {
-    const checkout = folder();
-    for (const rel of ["scripts/ci", "scripts/install", "scripts/installs"]) {
-      mkdirSync(join(checkout, rel), { recursive: true });
-    }
-    for (const file of [
-      "scripts/ci/desktop-release.sh",
-      "scripts/sync-install-stack-pin.mjs",
-      "scripts/installs/stack.sh",
-      "scripts/installs/stack.ps1",
-      "scripts/install/install.sh",
-      "scripts/install/install.ps1",
-    ]) {
-      copyFileSync(join(process.cwd(), file), join(checkout, file));
-    }
-    const driftedSh = readFileSync(
-      join(checkout, "scripts/install/install.sh"),
-      "utf8",
-    ).replace(
-      /STACK_PIN_SHA256='[a-f0-9]+'/,
-      `STACK_PIN_SHA256='${"0".repeat(64)}'`,
-    );
-    writeFileSync(join(checkout, "scripts/install/install.sh"), driftedSh);
+  it("refuses to publish when a required release asset is missing", () => {
+    const { bin, log, notes } = setupPublish([
+      "Linger-1.0.0-macos-arm64.dmg",
+      "Linger-1.0.0-linux-x64.tar.gz",
+      "SHA256SUMS.txt",
+    ]);
 
-    const dir = folder();
-    const result = run(
-      ["install-scripts", dir, version],
-      {},
-      join(checkout, "scripts/ci/desktop-release.sh"),
-    );
+    const result = run(["publish", "desktop-v1.0.0", "--notes-file", notes], {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    });
 
     expect(result.status).toBe(1);
-    expect(result.stderr).toContain("Stack release pin drift");
-    expect(existsSync(join(dir, "install.sh"))).toBe(false);
+    expect(result.stderr).toContain("Linger-1.0.0-windows-x64-setup.exe");
+    expect(readFileSync(log, "utf8")).not.toContain("release edit");
+  });
+
+  it("refuses prerelease tags and empty notes files", () => {
+    const { bin, notes } = setupPublish([]);
+    const emptyNotes = join(folder(), "empty.md");
+    writeFileSync(emptyNotes, "   \n");
+
+    const pre = run(["publish", "desktop-v1.0.0-rc.1", "--notes-file", notes], {
+      PATH: `${bin}:${process.env.PATH ?? ""}`,
+    });
+    expect(pre.status).toBe(1);
+    expect(pre.stderr).toContain("not prereleases");
+
+    const empty = run(
+      ["publish", "desktop-v1.0.0", "--notes-file", emptyNotes],
+      {
+        PATH: `${bin}:${process.env.PATH ?? ""}`,
+      },
+    );
+    expect(empty.status).toBe(1);
+    expect(empty.stderr).toContain("empty");
   });
 });

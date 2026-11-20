@@ -25,6 +25,7 @@ import {
 import { freePort, portFree } from "./ports.js";
 import type { SetupChoice } from "./setup-plan.js";
 import type { ByokConfiguration } from "./byok-source.js";
+import type { RuntimeDescriptor } from "./managed-runtimes.js";
 import type { InstallerEvent } from "./events.js";
 
 // A Native installation of one Linger source checkout: the desktop client's
@@ -49,6 +50,12 @@ export interface SourceInstallOptions {
   // The desktop client is this machine's Computer: source installs skip the
   // Go Computer build and enrollment, and the client signs in itself.
   externalComputer?: boolean;
+  // Cold-resume restarts of an existing checkout reuse an installed runtime
+  // after one inspection and overlap runtime preparation with service startup.
+  resume?: boolean;
+  // Passes runtime descriptors inspected during startup so callers avoid a
+  // second runtime status probe.
+  onRuntimeDescriptors?: (descriptors: RuntimeDescriptor[]) => void;
 }
 export interface EnvironmentReport {
   platform: string;
@@ -209,14 +216,17 @@ export async function prepareSourceConfiguration(
     // A port another program took since it was chosen moves to a free one
     // while the service that listens there is stopped; the services then
     // restart because their environment names the new port. The web port is
-    // the product origin, which the browser session, the desktop app and the
-    // Computer keep once the account exists, so it moves only before that;
-    // after it, the web service reports the program on its port. A database
-    // set aside from an older install marks the account to be made again, but
-    // that install's desktop still keeps the origin.
+    // the product origin. The desktop app follows it to a new port and keeps
+    // its Computer and session, so for the desktop it moves like the others.
+    // A Computer this installer enrolled keeps it once the owner account
+    // exists (or a database set aside from an older install marks the
+    // account to be made again): its self-update source and a pending
+    // enrollment credential name the origin. There the web service reports
+    // the program on its port instead.
     const keepsOrigin =
-      (await localAccountProvisioned(instance.root)) ||
-      (await latestLegacyBackup(instance.root)) !== undefined;
+      !options.externalComputer &&
+      ((await localAccountProvisioned(instance.root)) ||
+        (await latestLegacyBackup(instance.root)) !== undefined);
     const movable = Object.entries(portOwners).filter(
       ([name]) => !keepsOrigin || name !== "web",
     ) as [keyof typeof portOwners, NativeService][];
@@ -241,9 +251,24 @@ export async function prepareSourceConfiguration(
         instance.port = next;
         instance.origin = `http://localhost:${next}`;
       }
+      // Only the ports change on disk: a checkout this run rebinds to is
+      // saved once the services serve from it (saveSourceBinding).
+      const stored = (await loadInstance({
+        name: instance.name,
+        home: path.resolve(instance.root, "../.."),
+      }))!;
       await atomicPrivate(
         path.join(instance.root, "instance.json"),
-        JSON.stringify(instance, null, 2) + "\n",
+        JSON.stringify(
+          {
+            ...stored,
+            port: instance.port,
+            origin: instance.origin,
+            source: { ...stored.source!, ports: { ...instance.source.ports } },
+          },
+          null,
+          2,
+        ) + "\n",
       );
       warnings.push(
         `Port ${port} is in use by another program; Linger's ${owner} uses port ${next} instead.\n`,
@@ -319,9 +344,14 @@ export async function prepareSourceConfiguration(
       ),
     };
     const quote = (value: string) => {
-      if (/[\r\n\0']/.test(value))
-        throw new Error("Source environment contains unsupported characters.");
-      return `'${value}'`;
+      if (!/[\r\n\0]/.test(value)) {
+        // Match the launcher's parser, including literal Windows backslashes.
+        for (const delimiter of ["'", "`", '"', ""]) {
+          const quoted = `${delimiter}${value}${delimiter}`;
+          if (parseEnv(`VALUE=${quoted}`).VALUE === value) return quoted;
+        }
+      }
+      throw new Error("Source environment contains unsupported characters.");
     };
     const nativeFileOmissions = new Set([
       "WEB_HTTP_PORT",
@@ -331,13 +361,17 @@ export async function prepareSourceConfiguration(
       "HOST",
       "LOCAL_ENV_FILE",
     ]);
-    await atomicPrivate(
-      envFile,
-      Object.entries(generated)
-        .filter(([key]) => !nativeFileOmissions.has(key))
-        .map(([key, value]) => `${key}=${quote(value)}`)
-        .join("\n") + "\n",
+    const entries = Object.entries(generated).filter(
+      ([key]) => !nativeFileOmissions.has(key),
     );
+    const text =
+      entries.map(([key, value]) => `${key}=${quote(value)}`).join("\n") + "\n";
+    // An unmatched leading quote can consume a later entry, even if the
+    // isolated value round-trips. Validate exactly what the launcher reads.
+    const parsed = parseEnv(text);
+    if (entries.some(([key, value]) => parsed[key] !== value))
+      throw new Error("Source environment contains unsupported characters.");
+    await atomicPrivate(envFile, text);
     return { instance, env: generated, warnings };
   });
 }

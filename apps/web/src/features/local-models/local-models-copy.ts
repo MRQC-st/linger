@@ -39,6 +39,9 @@ const actionRefusals: Record<Schemas["LocalModelsErrorCode"], string> = {
 
 /** Why an action or a read failed: a TeamHub error code, or anything else. */
 export function actionErrorCopy(code: string | undefined) {
+  if (code === "LOCAL_COMPUTER_NOT_FOUND") {
+    return "This computer wasn't found. It may have been removed.";
+  }
   return code && Object.hasOwn(actionRefusals, code)
     ? actionRefusals[code as keyof typeof actionRefusals]
     : "Something went wrong. Try again.";
@@ -75,6 +78,35 @@ const modelErrorCauses: Record<
       ? `It loaded, but Agents couldn't be given access to it: the folder ${path} belongs to another account. Quit Linger, rename that folder, then open Linger and load the model again.`
       : "It loaded, but Agents couldn't be given access to it: a Linger folder on the computer belongs to another account.",
 };
+
+const modelErrorsShort: Record<
+  Schemas["LocalModelErrorCode"],
+  string | undefined
+> = {
+  CANCELLED: "loading stopped",
+  CHECKSUM_MISMATCH: "files damaged",
+  DISK_INSUFFICIENT: "not enough disk",
+  DOWNLOAD_FAILED: undefined,
+  ENGINE_START_FAILED: "engine didn't start",
+  GATEWAY_REGISTRATION_FAILED: "Agents couldn't reach it",
+  HEALTH_CHECK_FAILED: "model didn't answer",
+  INVALID_STATE: "busy with another step",
+  JOB_RUNNING: "busy with another step",
+  LOAD_NO_ROOM: "not enough free memory",
+  MEMORY_INSUFFICIENT: "not enough memory",
+  MODEL_FILES_MISSING: "files missing",
+  MODEL_UNKNOWN: "no longer on computer",
+  NETWORK_UNAVAILABLE: "network unavailable",
+  OUT_OF_MEMORY: "ran out of memory",
+  PLATFORM_UNSUPPORTED: "not for this computer",
+};
+
+/** Short failure summary for a collapsed model row; undefined when the status label suffices. */
+export function modelErrorShortCopy(
+  error: Schemas["LocalModelError"] | undefined,
+) {
+  return error ? modelErrorsShort[error.code] : undefined;
+}
 
 /**
  * Why the last load or download of a model failed. A cause names the fix;
@@ -221,7 +253,8 @@ const modelSourceRefusals: Record<Schemas["ModelSourceErrorCode"], string> = {
   BYOK_AUTH_FAILED: "The endpoint rejected the API key.",
   BYOK_INVALID_CONFIG:
     "The computer can't use this endpoint. An HTTPS endpoint needs an API key; plain HTTP works only on this computer or your local network.",
-  BYOK_MODEL_NOT_FOUND: "The endpoint doesn't serve this model ID.",
+  BYOK_NOT_FOUND:
+    "Nothing answered at the endpoint's address, or it doesn't serve this model ID.",
   BYOK_UNREACHABLE: "The computer couldn't reach the endpoint.",
   BYOK_UPSTREAM_REJECTED: "The endpoint rejected the test request.",
   LOCAL_COMPUTER_OFFLINE:
@@ -246,6 +279,33 @@ export function modelSourceErrorCopy(code: string | undefined) {
   return code && Object.hasOwn(modelSourceRefusals, code)
     ? modelSourceRefusals[code as keyof typeof modelSourceRefusals]
     : "Something went wrong. Try again.";
+}
+
+// For these the Computer's own message names the address it sent to and the
+// endpoint's HTTP status, so it is shown as it is.
+const byokEndpointRefusals = new Set([
+  "BYOK_AUTH_FAILED",
+  "BYOK_NOT_FOUND",
+  "BYOK_UNREACHABLE",
+  "BYOK_UPSTREAM_REJECTED",
+]);
+
+/** Why a request to a BYOK endpoint (a test or a model listing) failed. */
+export function byokFailureCopy(code: string | undefined, message: string) {
+  return code && byokEndpointRefusals.has(code) && message
+    ? message
+    : modelSourceErrorCopy(code);
+}
+
+/** Why reading a Computer's model source failed. */
+export function modelSourceReadErrorCopy(code: string | undefined) {
+  if (code === "MODEL_SOURCE_SERVICE_UNAVAILABLE") {
+    return modelSourceRefusals.MODEL_SOURCE_SERVICE_UNAVAILABLE;
+  }
+  if (code === "MODEL_SOURCE_UNCONFIRMED") {
+    return "The computer didn't answer in time. Try again.";
+  }
+  return "Couldn't read how Agents on this computer get their model. Try again.";
 }
 
 export const modelSourceModeLabels: Record<Schemas["ModelSourceMode"], string> =

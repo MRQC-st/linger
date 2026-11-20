@@ -41,6 +41,8 @@ function schedule(routine: Json): string {
   const listener = routine.listener as Json | undefined;
   if (listener) return `listens to ${String(listener.app)}`;
   const item = routine.schedule as Json;
+  if (item.kind === "every_n_minutes")
+    return `every ${String(item.interval_minutes)} minutes`;
   if (item.kind === "every_n_hours")
     return `every ${String(item.interval_hours)} hours`;
   if (item.kind === "once") return `once at ${String(item.run_at)}`;
@@ -195,6 +197,8 @@ export function renderBusinessResult(command: string, result: Json): string {
     return result.added
       ? `Added Agent ${singleLine(result.actor_id)} to Room ${singleLine(result.room_id)}. Wake it with an Agent reference in that Room.`
       : `Agent ${singleLine(result.actor_id)} is already a member of Room ${singleLine(result.room_id)}.`;
+  if (command === "room handoff")
+    return `${result.duplicate_request === true ? "Already handed off" : "Handed off"} to you in ${singleLine(result.inbox_id)}; you there carry it out. Confirm to your Human in one line.`;
   if (command === "room protocol")
     return result.published === false
       ? "No team.md collaboration protocol has been published in this Room yet."

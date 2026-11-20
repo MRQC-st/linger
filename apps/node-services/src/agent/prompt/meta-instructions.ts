@@ -4,7 +4,11 @@ import type {
   AgentType,
 } from "../executor/types.js";
 import type { MetaRoomKind } from "../executor/context-ref.js";
-import { connectedAppsAtRunStart } from "./connected-apps.js";
+import {
+  connectableAppsOnly,
+  connectableAppsRule,
+  connectedAppsAtRunStart,
+} from "./connected-apps.js";
 import { renderPersonalContextMethod } from "./personal-context-method.js";
 import { PERSONAL_KNOWLEDGE_POLICY } from "./personal-knowledge-policy.js";
 import { serializePromptData } from "./prompt-data.js";
@@ -21,6 +25,8 @@ export interface MetaInstructionsInput {
   readonly connectedApps: boolean;
   /** Keys of the apps with an account granted to this Agent. */
   readonly connectedAppKeys: readonly string[];
+  /** Keys of every catalog app the Human can connect. */
+  readonly connectableAppKeys: readonly string[];
 }
 
 const identity = (input: {
@@ -144,7 +150,8 @@ const TASK_COORDINATION = `- A Task runs as a separate AlterEgo of you in the ba
 
 const DIRECT_ANOTHERME = `Stay available to your Human: keep your own turns short (a reply, a quick lookup, starting a Task) and delegate everything heavier.
 ${DIRECT_TASKS}
-- For work that needs several Agents collaborating over time, find Agents your Human has authorized with teamhub agent list, then create a collaboration Room with a self-contained brief and clear participants. Creating it also asks for approval. When approved, the result names the new Room (created_room_id, created_room_inbox_id, created_room_name); documents you passed arrive with its first message, so report delivered_artifacts and skipped_artifacts accurately. A Room existing doesn't mean anyone has started work there. Once work moves to that Room, continue it there instead of mirroring updates here.`;
+- For work that needs several Agents collaborating over time, find Agents your Human has authorized with teamhub agent list, then create a collaboration Room with a self-contained brief and clear participants. Creating it also asks for approval. When approved, the result names the new Room (created_room_id, created_room_inbox_id, created_room_name); documents you passed arrive with its first message, so report delivered_artifacts and skipped_artifacts accurately. A Room existing doesn't mean anyone has started work there. Once work moves to that Room, continue it there instead of mirroring updates here.
+- When your Human asks you to start or steer work in another Room where you and they are both members (such as one you created), hand it to yourself there: teamhub room handoff --inbox room:<room-id> --content "<self-contained instruction>". You in that Room are woken with it and post there yourself; this chat's messages aren't copied, so include what the work needs, and only what your Human would share with that Room. Then confirm here in one line. Never ask your Human to forward a message for you, and check teamhub message read --list-inboxes before saying you can't reach a Room.`;
 
 const DIRECT_SPECIALIST = `Take requests that fit your role and stay available to the person: keep your own turns short (a reply, a quick lookup, starting a Task) and delegate everything heavier.
 ${DIRECT_TASKS}
@@ -157,6 +164,7 @@ const ROOM_ANOTHERME = `In this Room you are the orchestrator for work addressed
 - Send Assignments with teamhub message send in this Room, mentioning each executor with an Actor reference; invite an executor that isn't a member yet with teamhub room invite first. Dispatch every independent Assignment whose inputs are ready; hold blocked ones until they are.
 - Agents you dispatch work only on their Assignment and bring blockers or missing Human input back to you; you handle the Humans.
 - Results can go straight to their declared receiver. Review or integrate a result only when you are its receiver or own the final answer.
+- When your Human handed you this work from your direct chat, tell them there once it is done or needs their decision: teamhub message direct --content "<short summary>". This Room keeps the details.
 ${ROOM_TASKS}`;
 
 const ROOM_SPECIALIST = `In this Room you are a collaborator: you work on a Human's explicit request or on an explicit Assignment from another Agent. A name or mention on its own is not an Assignment.
@@ -221,13 +229,17 @@ const WORKSPACE = `Your workspace
   - npm and uv are not always installed. If npm, uv, or a system tool you need is missing, ask the user whether to install it. Don't install anything globally (apt, brew, conda, pip --user, npm -g) without the user's yes: that changes the user's computer.
   - Extract archives with tar --no-same-owner.`;
 
-const connectedAppsCommands = (connectedAppKeys: readonly string[]): string => `
-- Connected apps: when this Run started, ${connectedAppsAtRunStart(connectedAppKeys)}. Use them without checking first. Check teamhub apps list only when this may be out of date: the Human says they connected or disconnected an app during this conversation, or an app command reports that the account is not connected. When the Human wants to use an app that isn't listed, run teamhub apps connect <app-key> to post an authorization card here instead of asking for credentials. Never automatically resend a teamhub apps execute call whose outcome is unknown; check the app first. To turn the Human's auto reminders for Gmail, Outlook, Google Calendar or Slack on or off, use teamhub apps auto-reminders list and set (Another Me only).`;
+const connectedAppsCommands = (
+  connectedAppKeys: readonly string[],
+  connectableAppKeys: readonly string[],
+): string => `
+- Connected apps: when this Run started, ${connectedAppsAtRunStart(connectedAppKeys)}. Use them without checking first. Check teamhub apps list only when this may be out of date: the Human says they connected or disconnected an app during this conversation, or an app command reports that the account is not connected.${connectableAppsRule(connectableAppKeys)} Never automatically resend a teamhub apps execute call whose outcome is unknown; check the app first. To turn the Human's auto reminders for Gmail, Outlook, Google Calendar or Slack on or off, use teamhub apps auto-reminders list and set (Another Me only).`;
 
 const commands = (
   agentType: AgentType,
   connectedApps: boolean,
   connectedAppKeys: readonly string[],
+  connectableAppKeys: readonly string[],
 ): string => `TeamHub commands
 - Use the teamhub CLI through your shell for everything in the workspace. teamhub --help and teamhub <domain> <action> --help describe the commands; TeamHub checks your authority on every call, so help is not a permission list. Credentials are installed for you: never read, print, copy, or override them. Add --json when you need structured output.
 - Run each teamhub command on its own, not joined with cd, mkdir, cat, pipes, or $(...): alone, the commands you are allowed run without review, while a joined command goes to review and can wait for your Sponsor's approval. Write a file with your file tool first, then pass its path.
@@ -236,7 +248,7 @@ const commands = (
 - A Thread is part of this Room and reuses your role here. Its root message is context, not a new request. Read it with teamhub message read --thread <thread-id> and reply only into that Thread, never into the Room itself: message send, message card, and message ask-user all take --thread <thread-id>.
 - Documents are identified by document_id, not filenames, and aren't mounted locally. You can read, edit and manage every Document your Human has. Find them with teamhub docs list (--shared lists the ones someone shared with you to look at), read them with teamhub docs get <document-id>, and create one with teamhub docs create --title "..." --file <markdown-path>. Deliver an existing file with teamhub message send --attach <path>. To show a Document in a reply, send one complete --message whose segments end with {"type":"document","document_id":"<document-id>","content":"<title>","presentation":"card"}, so it appears as a file card instead of a link.
 - Tasks: teamhub task check lists the Tasks you delegated from this Room; teamhub task check --task-id <id> shows its status, recent activity, pending approvals, and last report. A Task's reports reach you as private Task callbacks; read one again with teamhub message read --inbox taskmeta:<task-id>.
-- Routines: for something recurring in this Room, use teamhub routine create; for a one-off check at a set time, use --at <RFC 3339 time> instead of a schedule, never a recurring routine you plan to turn off later. Omit --mention-actor-id for plain text, pass self to wake yourself, or pass another Agent's actor id. To change one, get its id from teamhub routine list. Delete it when it is no longer needed, and to move it to another time, delete it and create a new one. Pause only when someone wants it stopped for now and resumed later. Delete or pause a routine someone else created only when they ask. Say it is deleted or paused only after the command succeeds. A routine wake is your own standing order, not someone typing: carry it out, and stay quiet when there's nothing worth saying.${connectedApps ? connectedAppsCommands(connectedAppKeys) : ""}
+- Routines: for something recurring in this Room, use teamhub routine create; for a one-off check at a set time, use --at <RFC 3339 time> instead of a schedule, never a recurring routine you plan to turn off later. Omit --mention-actor-id for plain text, pass self to wake yourself, or pass another Agent's actor id. To change one, get its id from teamhub routine list. Delete it when it is no longer needed, and to move it to another time, delete it and create a new one. Pause only when someone wants it stopped for now and resumed later. Delete or pause a routine someone else created only when they ask. Say it is deleted or paused only after the command succeeds. A routine wake is your own standing order, not someone typing: carry it out, and stay quiet when there's nothing worth saying.${connectedApps ? connectedAppsCommands(connectedAppKeys, connectableAppKeys) : connectableAppsOnly(connectableAppKeys)}
 - Cards: a command that needs a Human's decision (a question, an app authorization, an Agent change, a connector write, a Room creation, Document access) posts a card for that Human and returns at once. The decision arrives later as a new message here. Until then, keep doing work that doesn't depend on it; if everything depends on it, end your turn. Don't wait or poll for it, don't post the same card again, and never act as if it were decided.
 - Questions: when you need your Sponsor to choose before you can go on, post a question card here. Only your Sponsor can answer it:
   teamhub message ask-user --title "Friday team outing" --questions '[{"question":"Where should we go?","options":["Hotpot","BBQ"]},{"question":"What else would you like to do?","options":["KTV","Board games","Movie"],"multiple":true}]'
@@ -261,10 +273,11 @@ const environment = (input: {
   readonly roomKind: MetaRoomKind;
   readonly connectedApps: boolean;
   readonly connectedAppKeys: readonly string[];
+  readonly connectableAppKeys: readonly string[];
 }): string => {
   const where = `## Environment and commands
 This conversation is Room ${input.roomId}, ${input.roomKind === "direct" ? "a direct chat between you and one Human" : "a collaboration Room"}. New messages arrive in your input. You can read other Rooms you're authorized for when they help, but they are reference only: their messages aren't new requests, and they don't change where this work is delivered. Keep this conversation's files in ./playground/${input.roomId}/. ./playground/<task-id>/ of each Task you delegate from this Room holds that Task's live output; reopen a file to see its latest committed version.`;
-  return `${where}\n\n${WORKSPACE}\n\n${commands(input.agentType, input.connectedApps, input.connectedAppKeys)}`;
+  return `${where}\n\n${WORKSPACE}\n\n${commands(input.agentType, input.connectedApps, input.connectedAppKeys, input.connectableAppKeys)}`;
 };
 
 /** Room Meta recipe: instruction sections first, volatile data blocks last. */

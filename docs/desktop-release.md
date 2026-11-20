@@ -19,17 +19,28 @@ becomes the latest release. Link there, not to a version.
 
 ## Releasing
 
+Stable releases use a two-stage Draft → Publish flow so release subscribers and
+auto-updating clients never see placeholder notes before the final release notes
+are attached.
+
 In a checkout of simplexai-labs/linger:
 
 ```sh
+# 1. Tag and push to build all targets and create the draft GitHub Release
 git tag desktop-v0.16.36
 git push origin desktop-v0.16.36
+
+# 2. Once Desktop release finishes, attach release notes and publish as latest
+scripts/ci/desktop-release.sh publish desktop-v0.16.36 --notes-file notes.md
 ```
 
 - The tag is `desktop-v<major>.<minor>.<patch>`, optionally with a suffix such
   as `-rc.1`, beside the `cli-v<version>` tags of the CLI. A version with a
-  hyphen is published as a GitHub prerelease whose notes start with
-  **Prerelease**; a stable version is marked as the latest release.
+  hyphen is published immediately as a GitHub prerelease whose notes start with
+  **Prerelease**; a stable version is created as a draft release until
+  `scripts/ci/desktop-release.sh publish` validates the uploaded assets,
+  attaches the release notes, marks it as the latest release, and cleans up
+  matching `desktop-v<version>-rc.*` prereleases and tags.
 - The version comes from the tag. The build writes it into
   `apps/desktop/package.json` for packaging and restores the file afterwards, so
   no version commit is needed.
@@ -42,11 +53,24 @@ The workflow runs for `desktop-v*` tags and from Actions → Desktop release →
 Run workflow. Its `build` jobs
 run on `ubuntu-24.04` (the macOS and Windows runners have no Docker) and keep
 the files as workflow artifacts for 14 days: `desktop-<target>`, a zip of
-every file for the platform, and the installer on its own, not zipped (the
-`.dmg`, the `-setup.exe`, the Linux `.tar.gz`), for testers to download
-directly. `release` writes `SHA256SUMS.txt`
-and creates the GitHub Release, or uploads the files again to an existing one.
-A manual run publishes only with `publish` set.
+every file for the platform (with the Windows portable archive split into
+`desktop-win32-x64-portable` so `desktop-win32-x64` carries only the Setup and
+its `windows-setup.sha256` digest), and the installer on its own, not zipped
+(the `.dmg`, the `-setup.exe`, the Linux `.tar.gz`), for testers to download
+directly. `windows-smoke` downloads `desktop-win32-x64`, verifies the Setup
+against `windows-setup.sha256`, and installs those bytes silently under a fresh
+standard user on `windows-2022`. It requests only packaged Pi preparation and
+checks the real Pi RPC handshake (`get_state`, `get_commands`) and the
+registered `mcp` command from the bundled managed MCP extension, with no
+`NODE_PATH` override. It starts no full Linger services, uses no model
+credentials, downloads no model weights, and does not verify the graphical
+installer, model inference, restart persistence, or uninstallation. `release`
+requires `windows-smoke` to pass, downloads `desktop-*`, checks the same
+`windows-setup.sha256` digest before removing that file, writes
+`SHA256SUMS.txt`, and creates the GitHub Release (as a draft for stable tags or
+published prerelease for hyphenated tags; reruns upload files to an existing
+release with `--clobber`). A manual run creates a release only with `publish`
+set, and a `publish=false` run still executes `windows-smoke`.
 
 The release goes to `RELEASE_REPO`, `simplexai-labs/linger` by default:
 
@@ -109,9 +133,63 @@ gh release upload native-deps <archive> --repo simplexai-labs/linger
    From another repository, also set `LINGER_RELEASE_TOKEN` there and push
    the tags to that repository instead.
 
-3. Check the release page, download each file and compare it with
-   `SHA256SUMS.txt`. A test release is removed with its tag:
-   `gh release delete desktop-v0.16.36-rc.1 --repo simplexai-labs/linger --cleanup-tag`.
+3. Check the draft release page, download each file and compare it with
+   `SHA256SUMS.txt`, then publish the stable release with its notes:
+   `scripts/ci/desktop-release.sh publish desktop-v0.16.36 --notes-file notes.md`
+   (this also deletes matching `desktop-v0.16.36-rc.*` prereleases and tags; a
+   standalone test prerelease can still be removed with
+   `gh release delete desktop-v0.16.36-rc.1 --repo simplexai-labs/linger --cleanup-tag`).
+
+### Physical Windows acceptance
+
+This is a manual verification flow for real Windows machines; it does not run
+in CI and does not gate releases. Use a digest-verified Windows Setup
+candidate on a clean, ordinary-user desktop with working mouse and keyboard,
+free disk, default Defender, and access from Windows to the configured external
+model endpoint. Pre-stage the Setup; do not build on the test laptop. Codex CLI
+and CC Switch are not prerequisites.
+
+1. Install through the actual Setup UI and complete Quick Install in Pi mode
+   with the configured external model. Record signing/SmartScreen and setup
+   independently. Confirm the Computer is online and its Pi catalog and
+   workspace grant are ready.
+2. Run one unique Room journey using
+   [`room-journey.mjs`](../scripts/acceptance/room-journey.mjs).
+   An aborted Run is a failure as soon as TeamHub persists it for the test
+   message. Success requires a completed Run, its persisted reply linked to
+   that Run with the matching SHA-256 digest, exact new file bytes, and the
+   successful write and terminal events for that Run.
+   Quit and reopen the installed Desktop, then verify that the configuration,
+   Room reply, and file persist.
+3. Test the real graphical uninstaller independently of the Room outcome.
+   Record the app payload, per-user uninstall and startup registrations,
+   shortcuts, process identities, listeners, and retained data checksums
+   before and after. Exit code zero alone does not prove cleanup; report
+   remaining payload, running processes or listeners, and any retry
+   separately from the first attempt.
+
+Keep fault injection and recovery matrices on disposable environments;
+label Windows ARM and native Windows x64 evidence separately. Record build,
+transfer, setup, operator wait, Room terminal detection, reopen, and uninstall
+times separately to show where the next optimization belongs.
+
+For the Room helper, set `LINGER_ACCEPTANCE_BASE_URL` (loopback),
+`LINGER_ACCEPTANCE_OWNER_FILE` (private local owner JSON), and
+`LINGER_ACCEPTANCE_COMPUTER_ID`; use `LINGER_ACCEPTANCE_MODEL` to select a
+specific catalog entry and `LINGER_ACCEPTANCE_TIMEOUT_SECONDS` to override the
+180-second budget. For one-command verification on the isolated host, set
+`LINGER_ACCEPTANCE_CONTEXT_VIEWS` to the daemon's `context-views` directory and
+`LINGER_ACCEPTANCE_AGENT_LOG_ROOT` to the Agent Service's log directory
+containing `agents/`. Alternatively set an exact
+`LINGER_ACCEPTANCE_WORKSPACE` and `LINGER_ACCEPTANCE_AGENT_LOG`. Paths for
+evidence are absolute. Invoke `node scripts/acceptance/room-journey.mjs`.
+Across hosts, `room_observed` means only the Run and persisted reply were
+linked; verify the file bytes and Agent logs separately with
+[`local-runner-message-evidence.mjs`](../scripts/local-runner-message-evidence.mjs)
+(`node scripts/local-runner-message-evidence.mjs --run-evidence` with
+`LINGER_ACCEPTANCE_FILE`, `LINGER_ACCEPTANCE_EXPECTED` or
+`LINGER_ACCEPTANCE_EXPECTED_SHA256`, `LINGER_ACCEPTANCE_AGENT_LOG`, and
+`LINGER_ACCEPTANCE_RUN_ID`).
 
 ## Release Files
 
@@ -122,7 +200,6 @@ gh release upload native-deps <archive> --repo simplexai-labs/linger
 | `Linger-<version>-windows-x64-setup.exe`    | Windows x64 per-user installer                                  |
 | `Linger-<version>-windows-x64-portable.zip` | Windows x64 folder to run without installing                    |
 | `Linger-<version>-macos-arm64.app.tar.gz`   | macOS app the updater swaps in                                  |
-| `install.sh`, `install.ps1`                 | guided local-model & Computer installer scripts                 |
 | `manifest.json`, `manifest.json.sig`        | only with the update key: the [auto-update](#auto-update) feed  |
 | `SHA256SUMS.txt`                            | SHA-256 of every file above                                     |
 
@@ -328,8 +405,10 @@ daemon from `resources/computer/`, so every package carries them as
 dependency package: the Node.js archive checksums in
 `scripts/local-computer-node-distributions.mjs`, the Cua driver checksums in
 `apps/computer/scripts/bundle-computer-tools.mjs` and the frozen pnpm
-lockfile. A source build keeps staged tools that still validate against the
-manifest and the Node.js pin recorded beside them, and links
+lockfile. The package includes the pinned QuickJS JavaScript engine and its
+WebAssembly binary for `computer.ui_exec`. The validator checks the engine
+version and requires its files in the manifest. A source build keeps staged
+tools that still validate against the manifest and the Node.js pin, and links
 `dist/computer/cli` and `dist/computer/runtime` to this machine's tools; delete
 `dist/computer-tools/` to stage them again. `packaging/computer_tools.py`
 copies them into the app, checks them with the same validator and checks the

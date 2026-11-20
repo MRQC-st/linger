@@ -19,7 +19,11 @@ InstallDirRegKey HKCU "${UNINSTALL_KEY}" "InstallLocation"
 !define APP_ID "com.simplexai.linger.desktop.preview"
 !define RUN_KEY "Software\Microsoft\Windows\CurrentVersion\Run"
 RequestExecutionLevel user
-SetCompressor /SOLID lzma
+; Use zlib without datablock deduplication: single-threaded LZMA spends
+; minutes re-compressing bundled archives, and datablock optimization scans
+; quadratically across the thousands of files in computer-tools.
+SetCompressor zlib
+SetDatablockOptimize off
 
 VIProductVersion "${NUMERIC_VERSION}.0"
 VIAddVersionKey "ProductName" "Linger"
@@ -178,6 +182,10 @@ Function StopEarlierLinger
   IfFileExists "$INSTDIR\Linger.exe" 0 done
   InitPluginsDir
   File "/oname=$PLUGINSDIR\stop.mjs" "${STAGE}\resources\app\dist\installer\installer.js"
+  ; The temporary script reads distribution.json beside itself. Use the
+  ; installed release's pins, since those are the tools it started.
+  IfFileExists "$INSTDIR\resources\app\dist\installer\distribution.json" 0 +2
+  CopyFiles /SILENT "$INSTDIR\resources\app\dist\installer\distribution.json" "$PLUGINSDIR"
   StrCpy $R0 "$PLUGINSDIR\stop.mjs"
   Call StopLinger
   done:

@@ -16,7 +16,8 @@ How agents, approvals and background work share a model is in
 ## Model source
 
 Each computer serves all of its agents from one source at a time. Setup asks
-for it, and **Settings › Models** switches it later.
+for it, and **Settings › Models** switches it later to Local model or BYOK; it
+does not offer a switch to Subscription.
 
 | Source       | Runtime                  | Where the model runs                                                                       |
 | ------------ | ------------------------ | ------------------------------------------------------------------------------------------ |
@@ -24,16 +25,37 @@ for it, and **Settings › Models** switches it later.
 | Subscription | Claude Code or Codex     | The plan the runtime is signed in to, with its own settings                                |
 | BYOK         | Claude Code, Codex or Pi | Your own OpenAI-compatible or Anthropic endpoint, key and model, through the local gateway |
 
-For BYOK you enter only the URL and key, then pick a model from the ones the
-endpoint lists, with their names and context windows; you type the model ID
-when the endpoint lists none. The computer finds which API format the endpoint
-answers, trying the runtime's own format first so the gateway passes its
-requests through unchanged. A gateway that serves OpenAI under `/v1` and
-Anthropic under `/anthropic` on one host works from either address. The key stays on the computer in
-an owner-only file; the server never stores or shows it. A switch moves every agent on the computer to the new runtime and
+For BYOK you enter the base URL and key, and optionally a path and an
+endpoint. Requests go to base URL + path + endpoint: the path defaults to
+`/v1` and the endpoint to the runtime's own (`/messages` for Claude Code,
+`/responses` for Codex, `/chat/completions` for Pi), and `-` leaves either one
+out, so a provider under `/api/paas/v4` or a full request address pasted into
+the base URL works too. The full address's ending sets the request format
+(OpenAI Chat Completions, OpenAI Responses or Anthropic Messages); an address
+that ends otherwise uses the runtime's own format. Nothing is probed: the refresh
+button lists models at base URL + path + `/models`, with their names and
+context windows, and **Test** sends one request to the full address. You type
+the model ID when the endpoint lists none. BYOK needs a Computer at 0.56.0 or
+later. The key stays on the computer in an owner-only file; the server never
+stores or shows it. A switch moves every agent on the computer to the new runtime and
 model, and leaving Local model unloads the local models to free memory. When an
 agent is still working, the switch asks first and ends that work only if you
 confirm.
+
+## Background Memory and Wiki
+
+Memory facts and reports, Agent Memory, and personal Wiki generation use the
+Runtime on the Computer where the relevant Agent is placed. On Pi, these calls
+require a Computer Daemon at 0.55.0 or later and run on the same model as
+Pi's own work: its default model, whether that is a local model or your own
+endpoint and key. Under Local model, downloaded is not loaded; load the model
+from setup or **Settings › Models**. Background Pi calls run without tools or
+a saved Pi session. If Pi or its model is unavailable, they wait or fail with
+a Runtime error; they never switch to Codex or Claude Code.
+
+A Codex or Claude Code placement can still use the other ready Runtime on
+that Computer. These calls use the chosen Runtime's default endpoint; if
+that endpoint is remote, it receives the input needed for the task.
 
 ## Planning
 

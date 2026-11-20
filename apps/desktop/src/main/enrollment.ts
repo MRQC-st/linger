@@ -6,6 +6,7 @@ import type { components } from "@linger/wire-contracts/teamhub-public/types";
 import type { CredentialStore } from "./computer-credential.js";
 import type { SavedEnrollment } from "./config.js";
 import type { Module, ModuleContext } from "./modules.js";
+import type { WorkspaceGrantsModule } from "./workspace-grants.js";
 
 type Schemas = components["schemas"];
 type CreateRequest = Schemas["LocalComputerEnrollmentCreateRequest"];
@@ -350,6 +351,7 @@ export class EnrollmentModule implements Module {
   #ctx: ModuleContext | undefined;
   #pending: Promise<{ computerId: string }> | undefined;
   #offServerChanged: (() => void) | undefined;
+  #offServerMoved: (() => void) | undefined;
   #activeServerUrl: string | undefined;
 
   constructor(options: EnrollmentOptions) {
@@ -377,6 +379,11 @@ export class EnrollmentModule implements Module {
         ctx.log.warn("enrollment.clear_failed", { error: String(error) }),
       );
     });
+    // The same server at another origin keeps its enrollments: the Computer
+    // reaches it through the gateway TeamHub named, not through the origin.
+    this.#offServerMoved = ctx.bus.on("server.moved", (from, to) => {
+      this.#moveEnrollment(from, to);
+    });
     // Enrollments made before the owner was kept, or whose credential did
     // not carry over from the bridge, are renewed for the same Computer.
     const config = ctx.config.get();
@@ -400,6 +407,27 @@ export class EnrollmentModule implements Module {
 
   async stop(): Promise<void> {
     this.#offServerChanged?.();
+    this.#offServerMoved?.();
+  }
+
+  #moveEnrollment(from: string, to: string): void {
+    const fromOrigin = enrollmentOrigin(from);
+    const toOrigin = enrollmentOrigin(to);
+    if (!fromOrigin || !toOrigin) return;
+    if (
+      this.#activeServerUrl &&
+      enrollmentOrigin(this.#activeServerUrl) === fromOrigin
+    )
+      this.#activeServerUrl = to;
+    const saved = this.#ctx!.config.get().savedEnrollments;
+    const entry = saved?.[fromOrigin];
+    if (!saved || !entry) return;
+    this.#ctx!.config.update({
+      savedEnrollments: Object.fromEntries([
+        ...Object.entries(saved).filter(([origin]) => origin !== fromOrigin),
+        [toOrigin, entry],
+      ]),
+    });
   }
 
   // Whether the window holds a valid session for the configured server.
@@ -530,6 +558,9 @@ export class EnrollmentModule implements Module {
       daemonId: enrolled.daemonId,
       ...(nextSaved ? { savedEnrollments: nextSaved } : {}),
     });
+    // Populate the default workspace grant before emitting computer.changed
+    // so the daemon starts with workspace_grants ready for first-online setup.
+    await ctx.get<WorkspaceGrantsModule>("WorkspaceGrants").ensureDefault();
     ctx.bus.emit("computer.changed", enrolled.computerId);
     ctx.log.info("enrollment.completed", { computer_id: enrolled.computerId });
     return { computerId: enrolled.computerId };

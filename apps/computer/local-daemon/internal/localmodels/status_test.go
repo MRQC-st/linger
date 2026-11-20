@@ -117,3 +117,30 @@ func TestMapStatusPreservesMemoryBreakdownAndLiveFitFields(t *testing.T) {
 		t.Fatal("expected error for invalid memory_pressure")
 	}
 }
+
+func TestMapStatusPreservesSubsecondObservedAt(t *testing.T) {
+	encoded, err := os.ReadFile("testdata/library-status-dev38.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var document map[string]any
+	if err := json.Unmarshal(encoded, &document); err != nil {
+		t.Fatal(err)
+	}
+	document["observed_at"] = "2026-11-17T20:37:38.25Z"
+	encoded, err = json.Marshal(document)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snapshot, err := mapStatus(encoded, time.Date(2026, 11, 17, 20, 37, 38, 123456789, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snapshot.ObservedAt != "2026-11-17T20:37:38.25Z" {
+		t.Fatalf("observed_at = %q, want 2026-11-17T20:37:38.25Z", snapshot.ObservedAt)
+	}
+	missing := unavailable(CodeToolFailed, "err", time.Date(2026, 11, 17, 20, 37, 38, 500000000, time.UTC))
+	if missing.ObservedAt != "2026-11-17T20:37:38.5Z" {
+		t.Fatalf("unavailable observed_at = %q, want 2026-11-17T20:37:38.5Z", missing.ObservedAt)
+	}
+}

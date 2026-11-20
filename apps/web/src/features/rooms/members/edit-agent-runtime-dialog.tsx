@@ -5,7 +5,11 @@ import { Link } from "react-router";
 import { Button } from "@/components/ui/button";
 import { ModalDialog } from "@/components/ui/modal-dialog";
 import { Select, SelectItem } from "@/components/ui/select";
+import { runtimeStatusLabels } from "@/features/local-computer/computer-readiness";
 import { localComputersQueryKey } from "@/features/local-computer/local-computer-queries";
+import { LocalRuntimeAuthenticationGuidance } from "@/features/local-computer/local-runtime-authentication-guidance";
+import { LocalRuntimeInstallGuidance } from "@/features/local-computer/local-runtime-install-guidance";
+import { localModelsQueryOptions } from "@/features/local-models/local-models-queries";
 import type { TeamHubClient } from "@/features/teamhub/teamhub-client";
 import type {
   TeamHubAgentReasoningEffort,
@@ -50,7 +54,8 @@ export function EditAgentRuntimeDialog({
   tenantId,
 }: {
   busy?: boolean;
-  client: Pick<TeamHubClient, "listTenantLocalComputers">;
+  client: Pick<TeamHubClient, "listTenantLocalComputers"> &
+    Partial<Pick<TeamHubClient, "api">>;
   field?: AgentRuntimeField;
   error?: string;
   isPending: boolean;
@@ -70,6 +75,26 @@ export function EditAgentRuntimeDialog({
   const { computer, grant, localReady, model, moving, runtime, target } =
     selection;
   const modelIsAvailable = Boolean(selection.selectedModel);
+  const localModels = useQuery({
+    ...localModelsQueryOptions(
+      client as TeamHubClient,
+      tenantId,
+      selection.computerId,
+    ),
+    enabled: Boolean(
+      client.api &&
+      selection.runtimeType === "pi" &&
+      selection.computerId &&
+      model &&
+      !modelIsAvailable &&
+      model.startsWith("localmodels-library/"),
+    ),
+  });
+  const unavailableModelLabel =
+    (localModels.data?.available
+      ? localModels.data.models.find((item) => item.model.pi_model === model)
+          ?.model.name
+      : undefined) ?? model;
   const loading = computers.isPending;
   const placementLocked = field === "model" || field === "reasoning";
   const noWritableGrant = moving && Boolean(computer) && !grant;
@@ -146,7 +171,9 @@ export function EditAgentRuntimeDialog({
               {(computer?.runtimes ?? []).map((item) => (
                 <SelectItem key={item.type} value={item.type}>
                   {runtimeLabels[item.type]}
-                  {item.status === "ready" ? "" : " · Unavailable"}
+                  {item.status === "ready"
+                    ? ""
+                    : ` · ${runtimeStatusLabels[item.status]}`}
                 </SelectItem>
               ))}
             </Select>
@@ -159,11 +186,12 @@ export function EditAgentRuntimeDialog({
                 className="ui-field-control w-full"
                 disabled={field === "reasoning"}
                 onValueChange={selection.selectModel}
+                placeholder="No models available"
                 value={model}
               >
                 {model && !modelIsAvailable ? (
                   <SelectItem value={model} disabled>
-                    {model} · Unavailable
+                    {unavailableModelLabel} · Unavailable
                   </SelectItem>
                 ) : null}
                 {selection.modelOptions.map((item) => (
@@ -231,11 +259,8 @@ export function EditAgentRuntimeDialog({
                 : "No models are available for this runtime."}
             </p>
           ) : null}
-          {!localReady && !loading && !unavailable && selection.runtimeType ? (
-            <p className="text-sm text-app-danger" role="alert">
-              {runtime?.message ??
-                "Install and sign in to this runtime on the computer, then wait for it to become ready."}
-            </p>
+          {!localReady && !loading && !unavailable && computer && runtime ? (
+            <RuntimeSetupGuidance computer={computer} runtime={runtime} />
           ) : null}
           {selection.runtimeType === "pi" &&
           selection.computerId &&
@@ -272,6 +297,49 @@ export function EditAgentRuntimeDialog({
         </fieldset>
       </form>
     </ModalDialog>
+  );
+}
+
+/* Desktop setup installs only the runtime the person chose, so the other
+   runtimes usually show up here not installed or signed out. Say which, and
+   give the command that fixes it on that computer. */
+function RuntimeSetupGuidance({
+  computer,
+  runtime,
+}: {
+  computer: LocalComputer;
+  runtime: LocalComputer["runtimes"][number];
+}) {
+  if (runtime.status === "not_installed")
+    return (
+      <div role="status">
+        <LocalRuntimeInstallGuidance
+          computerName={computer.display_name}
+          platform={computer.platform}
+          runtimeTypes={[runtime.type]}
+        />
+      </div>
+    );
+  if (runtime.status === "authentication_required")
+    return (
+      <div
+        className="rounded-lg border border-[var(--app-status-warning-border)] bg-[var(--app-status-warning-surface)] p-3 text-sm text-app-body"
+        role="status"
+      >
+        <LocalRuntimeAuthenticationGuidance
+          computerName={computer.display_name}
+          runtimeType={runtime.type}
+        />
+        <p className="mt-1 text-muted-foreground">
+          It turns ready here on its own shortly after you sign in.
+        </p>
+      </div>
+    );
+  return (
+    <p className="text-sm text-app-danger" role="alert">
+      {runtime.message ??
+        "Install and sign in to this runtime on the computer, then wait for it to become ready."}
+    </p>
   );
 }
 

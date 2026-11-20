@@ -393,6 +393,7 @@ describe("EnrollmentModule", () => {
     serverOverrides: ServerOverrides = {},
     initialServerUrl = "https://linger.example.com",
     initialConfig: Partial<DesktopConfig> = {},
+    ensureDefault: () => Promise<void> = async () => {},
   ) => {
     const dir = tempDirectory();
     const daemonIdentityFile = path.join(dir, "daemon-identity.json");
@@ -408,7 +409,14 @@ describe("EnrollmentModule", () => {
       fetch: server.fetch,
     });
     const host = testHost(
-      [stubModule("Config"), enrollment],
+      [
+        stubModule("Config"),
+        {
+          ...stubModule("WorkspaceGrants", ["Config"]),
+          ensureDefault,
+        } as never,
+        enrollment,
+      ],
       { serverUrl: initialServerUrl, ...initialConfig },
       bus,
     );
@@ -546,6 +554,46 @@ describe("EnrollmentModule", () => {
     await host.stop("quit");
   });
 
+  it("keeps the enrollment when the same server moves to another origin", async () => {
+    const { enrollment, host, bus, credentials, server } = setupModule(
+      {},
+      "http://localhost:3000",
+      {
+        savedEnrollments: { "https://other.example.com": { computerId: "c" } },
+      },
+    );
+    await host.start();
+    await enrollment.enroll();
+    const credential = credentials.read();
+
+    host.ctx.config.update({ serverUrl: "http://localhost:3001" });
+    bus.emit("server.moved", "http://localhost:3000", "http://localhost:3001");
+
+    const config = host.ctx.config.get();
+    expect(config.computerId).toBe("computer_1");
+    expect(credentials.read()).toEqual(credential);
+    expect(config.savedEnrollments).toEqual({
+      "https://other.example.com": { computerId: "c" },
+      "http://localhost:3001": {
+        computerId: "computer_1",
+        tenantId: "tenant_acme",
+        ownerActorId: "actor_ann",
+      },
+    });
+    // Unenrolling later saves the enrollment under the new origin.
+    await enrollment.unenroll();
+    expect(
+      Object.keys(host.ctx.config.get().savedEnrollments ?? {}),
+    ).not.toContain("http://localhost:3000");
+    // Enrolling again at the new origin renews the same Computer.
+    await enrollment.enroll();
+    const creates = server.calls.filter((call) =>
+      call.url.endsWith("/local-computer-enrollments"),
+    );
+    expect(creates.at(-1)?.body?.computer_id).toBe("computer_1");
+    await host.stop("quit");
+  });
+
   it("saves the previous server origin on server.changed without polluting the new origin", async () => {
     const { enrollment, host, bus } = setupModule();
     await host.start();
@@ -567,6 +615,27 @@ describe("EnrollmentModule", () => {
     expect(
       host.ctx.config.get().savedEnrollments?.["https://other.example.com"],
     ).toBeUndefined();
+    await host.stop("quit");
+  });
+
+  it("ensures default workspace grant before emitting computer.changed", async () => {
+    const order: string[] = [];
+    const { enrollment, host, bus } = setupModule(
+      {},
+      "https://linger.example.com",
+      {},
+      async () => {
+        order.push("ensureDefault");
+      },
+    );
+    bus.on("computer.changed", (computerId) => {
+      if (computerId) order.push("computer.changed");
+    });
+
+    await host.start();
+    await enrollment.enroll();
+
+    expect(order).toEqual(["ensureDefault", "computer.changed"]);
     await host.stop("quit");
   });
 });

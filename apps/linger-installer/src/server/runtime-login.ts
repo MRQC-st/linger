@@ -15,6 +15,7 @@ interface Input {
   runtime: NativeRuntime;
 }
 interface Session {
+  runtime: NativeRuntime;
   snapshot: Snapshot;
   child: ChildProcess;
   timer: ReturnType<typeof setTimeout>;
@@ -42,19 +43,24 @@ function allowedCodexUrl(url: URL, nativeBrowser: boolean) {
 /** Native output is private and ephemeral. Never attach it to persisted jobs or logs. */
 export class RuntimeLoginManager {
   private sessions = new Map<string, Session>();
+  private starting = new Map<string, AbortController>();
+  private closed = false;
   constructor(
     private inspect: typeof inspectRuntime = inspectRuntime,
     private platform: NodeJS.Platform = process.platform,
   ) {}
-  private async probe(input: Input) {
+  private async probe(input: Input, signal?: AbortSignal) {
     const env = {
       ...process.env,
       ...(await managedRuntimeEnvironment(input.home, input.root)),
     };
+    signal?.throwIfAborted();
     const state = await this.inspect(input.runtime, {
       home: input.home,
       env,
-      signal: AbortSignal.timeout(15000),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(15000)])
+        : AbortSignal.timeout(15000),
     });
     return { env, state };
   }
@@ -65,27 +71,59 @@ export class RuntimeLoginManager {
       // callback. Let it exit naturally; killing it here races that response.
       return { state: "ready" };
     }
+    const session = this.sessions.get(input.instance);
     return structuredClone(
-      this.sessions.get(input.instance)?.snapshot ?? { state: "idle" },
+      session?.runtime === input.runtime ? session.snapshot : { state: "idle" },
     );
   }
   async start(input: Input, code?: string): Promise<Snapshot> {
     if (code !== undefined) {
       const session = this.sessions.get(input.instance);
+      const stdin = session?.child.stdin;
       if (
-        !session?.snapshot.acceptsCode ||
-        !session.child.stdin?.writable ||
+        session?.runtime !== input.runtime ||
+        !session.snapshot.acceptsCode ||
+        !stdin?.writable ||
         !/^[A-Za-z0-9._~+/#=-]{1,4096}$/.test(code)
       )
         throw new Error("Invalid authorization code or inactive login");
-      session.child.stdin.write(code + "\n");
+      await new Promise<void>((resolve, reject) => {
+        stdin.write(code + "\n", (error) => {
+          if (error)
+            reject(
+              new Error(
+                "Native sign-in could not accept the authorization code. Retry or sign in later.",
+              ),
+            );
+          else resolve();
+        });
+      });
       return structuredClone(session.snapshot);
     }
-    const { env, state } = await this.probe(input);
-    if (state.ready) return { state: "ready" };
+    if (this.closed) return { state: "idle" };
+    this.starting.get(input.instance)?.abort();
+    const controller = new AbortController();
+    this.starting.set(input.instance, controller);
+    let result;
+    try {
+      result = await this.probe(input, controller.signal);
+    } catch (error) {
+      if (this.starting.get(input.instance) === controller)
+        this.starting.delete(input.instance);
+      if (controller.signal.aborted) return { state: "idle" };
+      throw error;
+    }
+    if (this.starting.get(input.instance) !== controller)
+      return { state: "idle" };
+    this.starting.delete(input.instance);
+    const { env, state } = result;
     const existing = this.sessions.get(input.instance);
+    if (existing && existing.runtime !== input.runtime)
+      this.stop(input.instance);
+    if (state.ready) return { state: "ready" };
     if (
       existing &&
+      existing.runtime === input.runtime &&
       ["starting", "waiting_user"].includes(existing.snapshot.state)
     )
       return structuredClone(existing.snapshot);
@@ -115,6 +153,7 @@ export class RuntimeLoginManager {
       stdio: ["pipe", "pipe", "pipe"],
     });
     const session: Session = {
+      runtime: input.runtime,
       child,
       snapshot: { state: "starting" },
       timer: setTimeout(() => {
@@ -130,6 +169,7 @@ export class RuntimeLoginManager {
     this.sessions.set(input.instance, session);
     let output = "";
     const receive = (chunk: Buffer) => {
+      if (session.snapshot.state === "failed") return;
       output = stripVTControlCharacters(output + chunk.toString()).slice(
         -16384,
       );
@@ -173,6 +213,7 @@ export class RuntimeLoginManager {
       };
     };
     child.once("error", failed);
+    child.stdin?.on("error", failed);
     child.once("close", () => {
       clearTimeout(session.timer);
       output = "";
@@ -191,6 +232,8 @@ export class RuntimeLoginManager {
   }
   /** Stops a login this manager started, such as when the person cancels it. */
   cancel(instance: string): Snapshot {
+    this.starting.get(instance)?.abort();
+    this.starting.delete(instance);
     this.stop(instance);
     return { state: "idle" };
   }
@@ -211,6 +254,9 @@ export class RuntimeLoginManager {
     this.sessions.delete(instance);
   }
   close() {
+    this.closed = true;
+    for (const controller of this.starting.values()) controller.abort();
+    this.starting.clear();
     for (const name of this.sessions.keys()) this.stop(name);
   }
 }

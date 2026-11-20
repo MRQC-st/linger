@@ -1,5 +1,6 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import {
+  act as reactAct,
   cleanup,
   fireEvent,
   render,
@@ -9,7 +10,7 @@ import {
 } from "@testing-library/react";
 import { Suspense } from "react";
 import { MemoryRouter, Route, Routes, useLocation } from "react-router";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { TeamHubEventSync } from "@/features/rooms/event-sync";
 import { TeamHubRuntimeProvider } from "@/features/teamhub/teamhub-runtime";
@@ -316,7 +317,7 @@ describe("LocalModelsPage", () => {
     const fixture = setup([
       macView({
         models: [
-          absent("lfm3-1.7b:Q8_0", "LFM3 1.7B", "unified", false),
+          absent("qwen3.8-27b-iq3s:UD-IQ3_S", "Qwen3.8 27B", "unified", false),
           absent("spark-x2.6-4b:Q4_K_M", "Spark-X2.6 4B", "unified", true),
         ],
       }),
@@ -329,7 +330,7 @@ describe("LocalModelsPage", () => {
     await findModels();
     expect(statuses()).toEqual([
       "Spark-X2.6 4B: Not downloaded · 2.6 GB · Recommended",
-      "LFM3 1.7B: Not downloaded · 2.6 GB",
+      "Qwen3.8 27B: Not downloaded · 2.6 GB",
     ]);
 
     cleanup();
@@ -476,7 +477,11 @@ describe("LocalModelsPage", () => {
       await renderPage(fixture);
       await findModels();
 
-      expect(statusOf("Llama 3.3 70B")).toBe("Download stopped");
+      expect(statusOf("Llama 3.3 70B")).toBe(
+        code === "NETWORK_UNAVAILABLE"
+          ? "Download stopped · network unavailable"
+          : "Download stopped",
+      );
       expect(
         screen.queryByRole("button", { name: "Retry Llama 3.3 70B" }),
       ).toBeNull();
@@ -655,7 +660,9 @@ describe("LocalModelsPage", () => {
     await renderPage(fixture);
     await findModels();
 
-    expect(statusOf("Llama 3.3 70B")).toBe("Couldn't load");
+    expect(statusOf("Llama 3.3 70B")).toBe(
+      "Couldn't load · engine didn't start",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Llama 3.3 70B" }));
     const details = screen.getByRole("region", {
       name: "Llama 3.3 70B details",
@@ -705,7 +712,9 @@ describe("LocalModelsPage", () => {
     await renderPage(fixture, "?computer=computer-mac");
     await findModels();
 
-    expect(statuses()).toContain("Llama 3.3 70B: Couldn't load");
+    expect(statuses()).toContain(
+      "Llama 3.3 70B: Couldn't load · not enough free memory",
+    );
     fireEvent.click(screen.getByRole("button", { name: "Llama 3.3 70B" }));
     const details = screen.getByRole("region", {
       name: "Llama 3.3 70B details",
@@ -1247,6 +1256,9 @@ describe("LocalModelsPage", () => {
       ).not.toBeInTheDocument();
       expect(
         screen.queryByRole("button", { name: "Details" }),
+      ).not.toBeInTheDocument();
+      expect(
+        screen.queryByRole("button", { name: "Recheck memory" }),
       ).not.toBeInTheDocument();
     },
   );
@@ -1904,15 +1916,23 @@ describe("Model source", () => {
     "/v0/tenants/{tenantId}/local-computers/{computerId}/model-source/models";
   const byokStatus = {
     byok: {
-      base_url: "https://api.example.com/v1",
+      base_url: "https://api.example.com",
       configured: true,
+      endpoint: "/chat/completions",
       key_saved: true,
       model_id: "vendor/model",
+      path: "/v1",
       protocol: "openai-chat",
     },
     mode: "byok",
     runtime: "codex",
     runtime_model: "localmodels-byok",
+  };
+  const unconfigured = {
+    byok: { configured: false, key_saved: false },
+    mode: "subscription",
+    runtime: "claude",
+    runtime_model: "",
   };
 
   function withSource(fixture: Fixture, status: object) {
@@ -1923,11 +1943,11 @@ describe("Model source", () => {
       .on("POST", modelsPath, ({ body }) => {
         listings.push(body);
         return Response.json({
-          base_url: "https://api.example.com",
           models: [
             { context_window: 131_072, id: "vendor/model", name: "Vendor" },
             { id: "vendor/other" },
           ],
+          url: "https://api.example.com/v1/models",
         });
       })
       .on("GET", switchPath, ({ params }) =>
@@ -1940,12 +1960,15 @@ describe("Model source", () => {
       )
       .on("POST", testPath, ({ body }) => {
         tests.push(body);
+        const { byok } = body as {
+          byok: { base_url: string; endpoint: string; path: string };
+        };
         return Response.json({
-          base_url: "https://api.example.com",
           context_window: 131_072,
           model_id: "vendor/model",
           ok: true,
           protocol: "openai-chat",
+          url: byok.base_url + byok.path + byok.endpoint,
         });
       });
     return { listings, switches, tests };
@@ -1967,14 +1990,21 @@ describe("Model source", () => {
     expect(
       screen.getByText("Agents on lab-118 use BYOK · vendor/model"),
     ).toBeInTheDocument();
-    expect(
-      screen.getByText("In use, through OpenAI Chat Completions."),
-    ).toBeInTheDocument();
     expect(screen.queryByText(/Stored privately/u)).not.toBeInTheDocument();
     expect(screen.queryByLabelText("API format")).not.toBeInTheDocument();
     expect(screen.getByLabelText("Base URL")).toHaveValue(
-      "https://api.example.com/v1",
+      "https://api.example.com",
     );
+    expect(screen.getByRole("combobox", { name: "Path" })).toHaveValue("/v1");
+    expect(screen.getByRole("combobox", { name: "Endpoint" })).toHaveValue(
+      "/chat/completions",
+    );
+    expect(
+      screen.getByText(/^Sends OpenAI Chat Completions requests to/u),
+    ).toHaveTextContent("https://api.example.com/v1/chat/completions");
+    expect(
+      screen.queryByRole("button", { name: "Test connection" }),
+    ).not.toBeInTheDocument();
   });
 
   it("asks before ending running tasks and switches only once confirmed", async () => {
@@ -2003,7 +2033,7 @@ describe("Model source", () => {
       return Response.json({
         computer_id: "computer-lab",
         online: true,
-        status: { ...byokStatus, mode: "subscription", runtime: "claude" },
+        status: { ...byokStatus, mode: "local", runtime: "pi" },
         terminated_run_count: 1,
         updated_agent_count: 2,
         viewer_is_owner: true,
@@ -2011,9 +2041,9 @@ describe("Model source", () => {
     });
     await renderPage(fixture);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Subscription" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Local model" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Switch to Claude Code" }),
+      await screen.findByRole("button", { name: "Switch to Local model" }),
     );
     const dialog = await screen.findByRole("dialog", {
       name: "End running tasks?",
@@ -2025,13 +2055,15 @@ describe("Model source", () => {
 
     expect(
       await screen.findByText(
-        "Agents now use Subscription · Claude Code. 2 Agents were moved. 1 task was ended.",
+        "Agents now use Local model. 2 Agents were moved. 1 task was ended.",
       ),
     ).toBeInTheDocument();
-    expect(switches).toEqual([
-      { mode: "subscription", runtime: "claude" },
-      { force_terminate: true, mode: "subscription", runtime: "claude" },
-    ]);
+    expect(switches).toHaveLength(2);
+    expect(switches[0]).toMatchObject({ mode: "local" });
+    expect(switches[1]).toEqual({
+      ...(switches[0] as object),
+      force_terminate: true,
+    });
   });
 
   it("shows what the Computer serves after a switch fails", async () => {
@@ -2047,7 +2079,7 @@ describe("Model source", () => {
           status:
             reads === 1
               ? byokStatus
-              : { ...byokStatus, mode: "subscription", runtime: "claude" },
+              : { ...byokStatus, mode: "local", runtime: "pi" },
           viewer_is_owner: true,
         });
       })
@@ -2065,15 +2097,13 @@ describe("Model source", () => {
       );
     await renderPage(fixture);
 
-    fireEvent.click(await screen.findByRole("tab", { name: "Subscription" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Local model" }));
     fireEvent.click(
-      screen.getByRole("button", { name: "Switch to Claude Code" }),
+      await screen.findByRole("button", { name: "Switch to Local model" }),
     );
 
     expect(
-      await screen.findByText(
-        "Agents on lab-118 use Subscription · Claude Code",
-      ),
+      await screen.findByText("Agents on lab-118 use Local model"),
     ).toBeInTheDocument();
     expect(reads).toBe(2);
   });
@@ -2101,19 +2131,23 @@ describe("Model source", () => {
     await renderPage(fixture);
 
     fireEvent.click(await screen.findByRole("tab", { name: /BYOK/u }));
-    expect(
-      await screen.findByRole("combobox", { name: "Model" }),
-    ).toHaveTextContent("vendor/model Vendor · 128K tokens");
-    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
-    expect(
-      await screen.findByText(
-        "Connected to https://api.example.com through OpenAI Chat Completions. vendor/model has 128K tokens of context.",
-      ),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("combobox", { name: "Model" }));
+    expect(await screen.findByLabelText("Model")).toHaveValue("vendor/model");
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    const connected = (await screen.findByText("Connected")).closest(
+      '[role="status"]',
+    );
+    expect(connected).toHaveTextContent(
+      "vendor/model · 128K context · OpenAI Chat Completions",
+    );
+    expect(connected).toHaveTextContent(
+      "https://api.example.com/v1/chat/completions",
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "List models" }));
     fireEvent.click(
       await screen.findByRole("option", { name: "vendor/other" }),
     );
+    expect(screen.getByLabelText("Model")).toHaveValue("vendor/other");
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "sk-new" },
     });
@@ -2122,161 +2156,264 @@ describe("Model source", () => {
     );
 
     await waitFor(() => expect(switches).toHaveLength(1));
-    fireEvent.click(await screen.findByRole("tab", { name: "Subscription" }));
+    fireEvent.click(await screen.findByRole("tab", { name: "Local model" }));
     fireEvent.click(screen.getByRole("tab", { name: /BYOK/u }));
-    expect(
-      await screen.findByRole("combobox", { name: "Model" }),
-    ).toHaveTextContent("vendor/other");
+    expect(await screen.findByLabelText("Model")).toHaveValue("vendor/other");
+    const address = {
+      base_url: "https://api.example.com",
+      endpoint: "/chat/completions",
+      path: "/v1",
+      protocol: "openai-chat",
+    };
     expect(tests).toEqual([
       {
-        byok: {
-          base_url: "https://api.example.com/v1",
-          model_id: "vendor/model",
-          reuse_saved_key: true,
-        },
-        runtime: "claude",
+        byok: { ...address, model_id: "vendor/model", reuse_saved_key: true },
       },
     ]);
     expect(switches).toEqual([
       {
-        byok: {
-          api_key: "sk-new",
-          base_url: "https://api.example.com/v1",
-          model_id: "vendor/other",
-        },
+        byok: { ...address, api_key: "sk-new", model_id: "vendor/other" },
         mode: "byok",
         runtime: "claude",
       },
     ]);
   });
 
-  it("lists the endpoint's models once its address and key are entered", async () => {
+  it("sends requests to the base URL, path and endpoint as entered", async () => {
     const fixture = setup([labView()]);
-    const { listings, tests } = withSource(fixture, {
-      byok: { configured: false, key_saved: false },
-      mode: "subscription",
-      runtime: "claude",
-      runtime_model: "",
-    });
+    const { listings, tests } = withSource(fixture, unconfigured);
     await renderPage(fixture);
 
     fireEvent.click(await screen.findByRole("tab", { name: /BYOK/u }));
+    const path = screen.getByRole("combobox", { name: "Path" });
+    const endpoint = screen.getByRole("combobox", { name: "Endpoint" });
+    expect(path).toHaveValue("/v1");
+    expect(path).toHaveClass("text-muted-foreground");
+    expect(endpoint).toHaveValue("/messages");
+
     const baseUrl = screen.getByLabelText("Base URL");
     fireEvent.change(baseUrl, {
-      target: { value: "https://api.example.com/v1" },
+      target: { value: " https://open.bigmodel.cn/ " },
     });
-    expect(listings).toEqual([]);
     fireEvent.blur(baseUrl);
-    const model = await screen.findByRole("combobox", { name: "Model" });
-    expect(model).toHaveTextContent("Choose a model");
-    fireEvent.click(model);
+    expect(baseUrl).toHaveValue("https://open.bigmodel.cn");
     expect(
-      await screen.findByRole("option", {
-        name: "vendor/model Vendor · 128K tokens",
-      }),
-    ).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("option", { name: "vendor/other" }));
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveTextContent(
-      "vendor/other",
+      screen.getByText(/^Sends Anthropic Messages requests to/u),
+    ).toHaveTextContent("https://open.bigmodel.cn/v1/messages");
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Show Path suggestions" }),
+    );
+    fireEvent.click(
+      await screen.findByRole("option", { name: /^\/api\/paas\/v4 /u }),
+    );
+    expect(path).toHaveValue("/api/paas/v4");
+    expect(path).toHaveClass("text-foreground");
+
+    // An endpoint left at its default follows the Runtime.
+    fireEvent.click(screen.getByRole("combobox", { name: "AI runtime" }));
+    fireEvent.click(await screen.findByRole("option", { name: "Pi" }));
+    expect(endpoint).toHaveValue("/chat/completions");
+    expect(
+      screen.getByText(/^Sends OpenAI Chat Completions requests to/u),
+    ).toHaveTextContent(
+      "https://open.bigmodel.cn/api/paas/v4/chat/completions",
     );
 
-    const apiKey = screen.getByLabelText("API key");
-    fireEvent.change(apiKey, { target: { value: "sk-listed" } });
-    fireEvent.blur(apiKey);
-    await waitFor(() => expect(listings).toHaveLength(2));
-    expect(listings).toEqual([
-      { base_url: "https://api.example.com/v1" },
-      { api_key: "sk-listed", base_url: "https://api.example.com/v1" },
-    ]);
-    fireEvent.blur(apiKey);
+    // Without an endpoint the address names no format, so Pi's own applies.
     fireEvent.click(
-      await screen.findByRole("button", { name: "Test connection" }),
+      screen.getByRole("button", { name: "Show Endpoint suggestions" }),
     );
+    fireEvent.click(
+      await screen.findByRole("option", {
+        name: "- No endpoint. The base URL is the full address.",
+      }),
+    );
+    expect(endpoint).toHaveValue("");
+    expect(
+      screen.getByText(
+        /^Sends OpenAI Chat Completions \(the Pi format\) requests to/u,
+      ),
+    ).toHaveTextContent("https://open.bigmodel.cn/api/paas/v4");
+
+    fireEvent.click(screen.getByRole("button", { name: "List models" }));
+    await waitFor(() => expect(listings).toHaveLength(1));
+    expect(listings[0]).toEqual({
+      base_url: "https://open.bigmodel.cn",
+      endpoint: "",
+      path: "/api/paas/v4",
+      protocol: "openai-chat",
+    });
+
+    fireEvent.change(screen.getByLabelText("Model"), {
+      target: { value: " glm-5 " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
     await waitFor(() => expect(tests).toHaveLength(1));
     expect(tests[0]).toEqual({
       byok: {
-        api_key: "sk-listed",
-        base_url: "https://api.example.com/v1",
-        model_id: "vendor/other",
+        base_url: "https://open.bigmodel.cn",
+        endpoint: "",
+        model_id: "glm-5",
+        path: "/api/paas/v4",
+        protocol: "openai-chat",
       },
-      runtime: "claude",
     });
-    expect(listings).toHaveLength(2);
+
+    // A path carries only segments, never a query.
+    fireEvent.change(path, { target: { value: "/v4?beta=1" } });
+    expect(
+      screen.getByText(/Path and endpoint take segments like \/v1/u),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Test" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "List models" })).toBeDisabled();
   });
 
-  it("lists the models again on request with the key as typed", async () => {
+  it("lists the models only on request, with the key as typed", async () => {
     const fixture = setup([labView()]);
     const { listings } = withSource(fixture, byokStatus);
     await renderPage(fixture);
 
-    expect(await screen.findByText("2 models listed.")).toBeInTheDocument();
+    expect(
+      await screen.findByText("List the endpoint's models, or type an ID."),
+    ).toBeInTheDocument();
+    expect(listings).toEqual([]);
+    fireEvent.click(screen.getByRole("button", { name: "List models" }));
+    expect(
+      await screen.findByText(
+        "2 models listed from https://api.example.com/v1/models.",
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", {
+        name: "vendor/model Vendor · 128K context",
+      }),
+    ).toBeInTheDocument();
     expect(listings).toEqual([
-      { base_url: "https://api.example.com/v1", reuse_saved_key: true },
+      {
+        base_url: "https://api.example.com",
+        endpoint: "/chat/completions",
+        path: "/v1",
+        protocol: "openai-chat",
+        reuse_saved_key: true,
+      },
     ]);
+
     fireEvent.change(screen.getByLabelText("API key"), {
       target: { value: "sk-typed" },
     });
+    expect(screen.queryByText(/models listed from/u)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "List models" }));
-
     await waitFor(() => expect(listings).toHaveLength(2));
-    expect(listings[1]).toEqual({
-      api_key: "sk-typed",
-      base_url: "https://api.example.com/v1",
-    });
-    expect(screen.getByRole("combobox", { name: "Model" })).toHaveTextContent(
-      "vendor/model Vendor · 128K tokens",
-    );
+    expect(listings[1]).toMatchObject({ api_key: "sk-typed" });
+    expect(listings[1]).not.toHaveProperty("reuse_saved_key");
   });
 
   it("falls back to typing the model ID when the endpoint lists none", async () => {
     const fixture = setup([labView()]);
     withSource(fixture, byokStatus);
     fixture.runtime.server.on("POST", modelsPath, () =>
-      Response.json(
-        {
-          error: {
-            code: "BYOK_MODEL_NOT_FOUND",
-            message: "not found",
-            request_id: "test-models",
-          },
-        },
-        { status: 409 },
+      teamHubErrorResponse(
+        409,
+        "BYOK_NOT_FOUND",
+        "https://api.example.com/v1/models returned HTTP 404: the address or the model was not found.",
       ),
     );
     await renderPage(fixture);
 
+    fireEvent.click(await screen.findByRole("button", { name: "List models" }));
     expect(
       await screen.findByText(
-        "The endpoint didn't list its models. Type the model ID.",
+        "https://api.example.com/v1/models returned HTTP 404: the address or the model was not found.",
       ),
     ).toBeInTheDocument();
     expect(screen.getByLabelText("Model")).toHaveValue("vendor/model");
   });
 
-  it("tests an endpoint on this computer without an API key", async () => {
+  it("keeps a failed test in view until dismissed and lets a success fade", async () => {
     const fixture = setup([labView()]);
-    const { tests } = withSource(fixture, {
-      byok: { configured: false, key_saved: false },
-      mode: "subscription",
-      runtime: "claude",
-      runtime_model: "",
+    const { tests } = withSource(fixture, byokStatus);
+    fixture.runtime.server.on("POST", testPath, ({ body }) => {
+      tests.push(body);
+      return tests.length === 1
+        ? teamHubErrorResponse(
+            409,
+            "BYOK_NOT_FOUND",
+            "https://api.example.com/v1/chat/completions returned HTTP 404: the address or the model was not found.",
+          )
+        : teamHubErrorResponse(
+            409,
+            "BYOK_AUTH_FAILED",
+            "https://api.example.com/v1/chat/completions rejected the API key (HTTP 401).",
+          );
     });
     await renderPage(fixture);
+    // Only the toast's own timers run fake, between requests to the server.
+    function afterFakeTime(act: () => void, ...steps: number[]) {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      try {
+        act();
+        for (const step of steps)
+          reactAct(() => {
+            vi.advanceTimersByTime(step);
+          });
+      } finally {
+        vi.useRealTimers();
+      }
+    }
 
-    fireEvent.click(await screen.findByRole("tab", { name: /BYOK/u }));
-    fireEvent.change(screen.getByLabelText("Base URL"), {
-      target: { value: "http://127.0.0.1:18486/v1" },
-    });
-    fireEvent.change(screen.getByLabelText("Model"), {
-      target: { value: "vendor/model" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "Test connection" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Test" }));
+    const failed = await screen.findByRole("alert");
+    expect(failed).toHaveTextContent("Couldn't connect");
+    expect(failed).toHaveTextContent(
+      "https://api.example.com/v1/chat/completions returned HTTP 404: the address or the model was not found.",
+    );
+    afterFakeTime(() => undefined, 10_000);
+    expect(failed).toBeInTheDocument();
+    afterFakeTime(
+      () =>
+        fireEvent.click(
+          within(failed).getByRole("button", { name: "Dismiss" }),
+        ),
+      200,
+    );
+    expect(screen.queryByText("Couldn't connect")).not.toBeInTheDocument();
 
-    await waitFor(() => expect(tests).toHaveLength(1));
-    expect(tests[0]).toEqual({
-      byok: { base_url: "http://127.0.0.1:18486/v1", model_id: "vendor/model" },
-      runtime: "claude",
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "https://api.example.com/v1/chat/completions rejected the API key (HTTP 401).",
+    );
+    afterFakeTime(() => fireEvent.pointerDown(document.body), 200);
+    expect(screen.queryByText("Couldn't connect")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByRole("alert")).toBeInTheDocument();
+    // Editing the address withdraws the result it no longer describes.
+    fireEvent.change(screen.getByRole("combobox", { name: "Path" }), {
+      target: { value: "/v2" },
     });
+    expect(screen.queryByText("Couldn't connect")).not.toBeInTheDocument();
+
+    fixture.runtime.server.on("POST", testPath, () =>
+      Response.json({
+        context_window: 2048,
+        model_id: "vendor/model",
+        ok: true,
+        protocol: "openai-chat",
+        url: "https://api.example.com/v2/chat/completions",
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    const connected = (await screen.findByText("Connected")).closest(
+      '[role="status"]',
+    )!;
+    expect(connected).toHaveTextContent("vendor/model · 2K context");
+    // Resting the pointer on a success keeps it; leaving lets it fade.
+    fireEvent.mouseEnter(connected);
+    afterFakeTime(() => undefined, 10_000);
+    expect(connected).toBeInTheDocument();
+    afterFakeTime(() => fireEvent.mouseLeave(connected), 1_500, 200);
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
   });
 
   it("switches back to a model already on the computer", async () => {
@@ -2349,13 +2486,16 @@ describe("Model source", () => {
     });
     await renderPage(fixture);
 
-    const tip = await screen.findByRole("complementary", {
-      name: "Local model tip",
-    });
-    expect(tip).toHaveTextContent("16 GB");
-    fireEvent.click(
-      within(tip).getByRole("button", { name: "Open Local model" }),
-    );
+    const tabs = await screen.findByRole("tablist", { name: "Model source" });
+    expect(
+      within(tabs).getByRole("tab", { name: "Local model", selected: true }),
+    ).toBeInTheDocument();
+    expect(
+      within(tabs).queryByRole("tab", { name: "Subscription" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByText("Agents on lab-118 use Subscription · Claude Code"),
+    ).toBeInTheDocument();
 
     const guidance = await screen.findByRole("complementary", {
       name: "Memory guidance",
@@ -2903,5 +3043,499 @@ describe("Model source", () => {
         },
       ]),
     );
+  });
+
+  it("shows a readable error while keeping the library when reading model source fails", async () => {
+    const fixture = setup();
+    fixture.runtime.server.on("GET", modelSourcePath, () =>
+      teamHubErrorResponse(502, "MODEL_SOURCE_FAILED"),
+    );
+
+    await renderPage(fixture);
+    await findModels();
+
+    const alert = await screen.findByRole("alert");
+    expect(alert).toHaveTextContent(
+      "Couldn't read how Agents on this computer get their model. Try again.",
+    );
+    const retry = within(alert).getByRole("button", { name: "Retry" });
+    fixture.runtime.server.on("GET", modelSourcePath, ({ params }) =>
+      Response.json({
+        computer_id: params.computerId,
+        online: true,
+        status: {
+          ...byokStatus,
+          mode: "local",
+          runtime: "pi",
+          runtime_model: "localmodels-library/qwen3-coder-30b",
+        },
+        viewer_is_owner: true,
+      }),
+    );
+    fireEvent.click(retry);
+    expect(
+      await screen.findByText("Agents on lab-118 use Local model"),
+    ).toBeInTheDocument();
+  });
+
+  it("refetches model source when a Computer comes back online and disables BYOK when offline", async () => {
+    const offlineLab = labView({
+      computer: { ...labView().computer, status: "offline" },
+    });
+    const fixture = setup([offlineLab]);
+    let online = false;
+    fixture.runtime.server.on("GET", switchPath, ({ params }) =>
+      Response.json({
+        computer_id: params.computerId,
+        online,
+        ...(online ? { status: byokStatus } : {}),
+        viewer_is_owner: true,
+      }),
+    );
+    await renderPage(fixture);
+    await findModels();
+
+    expect(
+      screen.queryByRole("tablist", { name: "Model source" }),
+    ).not.toBeInTheDocument();
+
+    online = true;
+    publishSnapshot(fixture, labView());
+
+    expect(
+      await screen.findByRole("tab", { name: /BYOK/u, selected: true }),
+    ).toBeInTheDocument();
+    expect(screen.getByLabelText("Base URL")).toBeEnabled();
+
+    // Going offline while viewing BYOK shows the offline notice and disables edits.
+    publishSnapshot(fixture, offlineLab);
+    expect(await screen.findByText(/Reconnect it in/u)).toBeInTheDocument();
+    expect(screen.getByLabelText("Base URL")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Save" })).toBeDisabled();
+  });
+
+  it("resets stale BYOK test feedback, protects saved keys across origins, clears models on a new address, and takes typed model IDs", async () => {
+    const fixture = setup([labView()]);
+    const { listings, switches, tests } = withSource(fixture, byokStatus);
+    fixture.runtime.server.on("POST", switchPath, ({ body }) => {
+      switches.push(body);
+      return Response.json({
+        computer_id: "computer-lab",
+        online: true,
+        status: byokStatus,
+        viewer_is_owner: true,
+      });
+    });
+    await renderPage(fixture);
+
+    const tabs = await screen.findByRole("tablist", { name: "Model source" });
+    expect(tabs).toHaveClass("self-start");
+    fireEvent.click(await screen.findByRole("button", { name: "List models" }));
+    expect(
+      await screen.findByText(
+        "2 models listed from https://api.example.com/v1/models.",
+      ),
+    ).toBeInTheDocument();
+
+    // Any model ID can be typed even when the endpoint listed models.
+    const model = screen.getByLabelText("Model");
+    fireEvent.change(model, { target: { value: "custom/alias" } });
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    expect(await screen.findByText("Connected")).toBeInTheDocument();
+
+    // Another origin withdraws the result, the listed models and the saved key.
+    const baseUrl = screen.getByLabelText("Base URL");
+    fireEvent.change(baseUrl, {
+      target: { value: "https://other.example.net" },
+    });
+    expect(screen.queryByText("Connected")).not.toBeInTheDocument();
+    expect(
+      screen.getByText("List the endpoint's models, or type an ID."),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(/A key is saved on this computer/u),
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "Test" }));
+    await waitFor(() => expect(tests).toHaveLength(2));
+    expect(tests[1]).toEqual({
+      byok: {
+        base_url: "https://other.example.net",
+        endpoint: "/chat/completions",
+        model_id: "custom/alias",
+        path: "/v1",
+        protocol: "openai-chat",
+      },
+    });
+
+    // Saving while already on BYOK clears the typed API key input cleanly.
+    fireEvent.change(baseUrl, { target: { value: "https://api.example.com" } });
+    fireEvent.change(screen.getByLabelText("API key"), {
+      target: { value: "sk-rotate" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Save" }));
+    await waitFor(() => expect(switches).toHaveLength(1));
+    await waitFor(() =>
+      expect(screen.getByLabelText("API key")).toHaveValue(""),
+    );
+    expect(listings).toHaveLength(1);
+  });
+
+  it("refreshes Tenant Agents after Use for Agents and lets SwitchToLocalNotice prefer a newly loaded model", async () => {
+    const idleSmall = localModel({
+      id: "spark-4b:Q4_K_M",
+      memory_bytes: gb(4),
+      name: "Spark 4B",
+      pi_model: "localmodels-library/spark-4b",
+      pool: "gpu:0",
+      state: "idle",
+    });
+    const loadedLarge = localModel({
+      id: "qwen3.8-27b:IQ3_S",
+      memory_bytes: gb(16),
+      name: "Qwen3.8 27B",
+      pi_model: "localmodels-library/qwen3.8-27b",
+      pool: "gpu:0",
+      state: "loaded",
+    });
+    const fixture = setup([labView({ models: [modelView(idleSmall)] })]);
+    enableReadyPi(fixture);
+    const { switches } = withSource(fixture, {
+      ...byokStatus,
+      mode: "byok",
+      runtime: "pi",
+      runtime_model: "localmodels-byok",
+    });
+    let agentReads = 0;
+    fixture.runtime.server.on("GET", "/v0/tenants/{tenantId}/agents", () => {
+      agentReads += 1;
+      return {
+        items: fixture.runtime.seed.tenantAgents,
+        page: { has_more: false },
+      };
+    });
+    fixture.runtime.server.on("POST", switchPath, ({ body }) => {
+      switches.push(body);
+      return Response.json({
+        computer_id: "computer-lab",
+        online: true,
+        status: {
+          ...byokStatus,
+          mode: "local",
+          runtime: "pi",
+          runtime_model: "localmodels-library/qwen3.8-27b",
+        },
+        viewer_is_owner: true,
+      });
+    });
+    await renderPage(fixture);
+
+    fireEvent.click(await screen.findByRole("tab", { name: "Local model" }));
+    await findModels();
+
+    // A newly loaded model becomes the default target without sticking on the earlier idle one.
+    publishSnapshot(
+      fixture,
+      labView({
+        models: [modelView(idleSmall), modelView(loadedLarge)],
+        observed_at: "2026-11-13T10:08:00.000Z",
+      }),
+    );
+    const readsBeforeSwitch = agentReads;
+    await screen.findByRole("combobox", { name: "Local model" });
+    fireEvent.click(
+      screen.getByRole("button", { name: "Switch to Local model" }),
+    );
+    await waitFor(() => expect(switches).toHaveLength(1));
+    expect(switches[0]).toEqual({
+      local_model_id: "qwen3.8-27b:IQ3_S",
+      mode: "local",
+    });
+    await waitFor(() => expect(agentReads).toBeGreaterThan(readsBeforeSwitch));
+  });
+
+  it("offers Remove for damaged files, warns for unloaded models with Agents, and recovers from missing Computers or TOOL_FAILED", async () => {
+    const damaged = localModel({
+      error: { code: "CHECKSUM_MISMATCH" },
+      id: "broken:Q4",
+      memory_bytes: gb(6),
+      name: "Broken 6B",
+      pool: "gpu:0",
+      state: "failed",
+    });
+    const idleUsed = localModel({
+      id: "idle-used:Q4",
+      memory_bytes: gb(8),
+      name: "Idle Used 8B",
+      pi_model: "localmodels-library/idle-used",
+      pool: "gpu:1",
+      state: "idle",
+    });
+    const offlineFirst = labView({
+      computer: {
+        ...labView().computer,
+        computer_id: "computer-offline",
+        display_name: "Old Laptop",
+        status: "offline",
+      },
+    });
+    const onlineSecond = labView({
+      computer: {
+        ...labView().computer,
+        computer_id: "computer-online",
+        display_name: "Workstation",
+        status: "online",
+      },
+      models: [modelView(damaged), modelView(idleUsed, ["Research agent"])],
+      pools: [gpuPool(0, 24), { ...gpuPool(1, 24), used_bytes: gb(5) }],
+    });
+    const fixture = setup(
+      [offlineFirst, onlineSecond],
+      [inventoryComputer(offlineFirst), inventoryComputer(onlineSecond)],
+    );
+    await renderPage(fixture);
+    await findModels();
+
+    // Prefers the online Computer over an earlier offline one when no ?computer= is given.
+    expect(
+      screen.getByRole("combobox", { name: "Computer" }),
+    ).toHaveTextContent("Workstation");
+
+    expect(statusOf("Broken 6B")).toBe("Couldn't load · files damaged");
+    expect(
+      screen.getByRole("button", { name: "Remove Broken 6B" }),
+    ).toBeEnabled();
+    expect(
+      screen.queryByRole("button", { name: "Retry Broken 6B" }),
+    ).toBeNull();
+
+    expect(statusOf("Idle Used 8B")).toBe("Downloaded · load to answer");
+    fireEvent.click(screen.getByRole("button", { name: "Idle Used 8B" }));
+    expect(
+      screen.getByRole("region", { name: "Idle Used 8B details" }),
+    ).toHaveTextContent(
+      "Research agent uses this model. Load it so it can answer.",
+    );
+
+    // Details modal includes Other apps in the legend when external apps hold memory.
+    fireEvent.click(screen.getByRole("button", { name: "Details" }));
+    const detailsDialog = screen.getByRole("dialog", {
+      name: "Workstation details",
+    });
+    expect(detailsDialog).toHaveTextContent("Other apps");
+    fireEvent.click(
+      within(detailsDialog).getByRole("button", { name: "Close" }),
+    );
+
+    // A missing ?computer= shows clear copy and a button back to the owner's online Computer.
+    cleanup();
+    await renderPage(fixture, "?computer=computer-removed");
+    expect(
+      await screen.findByText(
+        "This computer wasn't found. It may have been removed.",
+      ),
+    ).toBeVisible();
+    fireEvent.click(screen.getByRole("button", { name: "Open Workstation" }));
+    await findModels();
+    expect(card("Broken 6B")).toBeVisible();
+
+    // TOOL_FAILED offers Try again refresh when the Computer is online.
+    publishSnapshot(fixture, {
+      ...onlineSecond,
+      available: false,
+      models: [],
+      observed_at: "2026-11-13T10:12:00.000Z",
+      pools: [],
+      reason: { code: "TOOL_FAILED" },
+    });
+    const retryTool = await screen.findByRole("button", { name: "Try again" });
+    fireEvent.click(retryTool);
+    await waitFor(() => expect(fixture.refreshes).toEqual(["computer-online"]));
+  });
+
+  it("clears optimistic action state when a snapshot lands before 202 and drops externally unloaded models from Make room", async () => {
+    const baseMac = macView();
+    const fixture = setup([baseMac]);
+    let releaseAction!: () => void;
+    fixture.runtime.server.on(
+      "POST",
+      actionPath,
+      ({ body, params }) =>
+        new Promise((resolve) => {
+          fixture.actions.push({
+            body,
+            computerId: params.computerId!,
+            modelId: params.modelId!,
+          });
+          releaseAction = () =>
+            resolve(accepted((body as { action: string }).action));
+        }),
+    );
+    await renderPage(fixture);
+    await findModels();
+
+    // Open Make room for Llama 3.3 70B (needs 46 GB, GPT-OSS 20B preselected).
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry Llama 3.3 70B" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Make room to load" });
+    const checkbox = within(dialog).getByRole("checkbox", {
+      name: /GPT-OSS 20B/u,
+    });
+    // Unchecking shows the shortfall hint cleanly.
+    fireEvent.click(checkbox);
+    expect(dialog).toHaveTextContent(
+      "Select at least 9.1 GB more to unload before loading Llama 3.3 70B.",
+    );
+    fireEvent.click(checkbox);
+
+    // Another model is unloaded externally, leaving another loaded model on the pool.
+    const extraLoaded = localModel({
+      fit: "unified",
+      id: "extra:Q4",
+      memory_bytes: gb(12),
+      name: "Extra 12B",
+      pool: "unified",
+      state: "loaded",
+    });
+    publishSnapshot(fixture, {
+      ...baseMac,
+      models: [modelView(extraLoaded), baseMac.models[1]!],
+      observed_at: "2026-11-13T10:09:00.000Z",
+      pools: [
+        {
+          holders: [
+            { bytes: gb(12), id: "extra:Q4", kind: "model", name: "Extra 12B" },
+          ],
+          id: "unified",
+          kind: "unified",
+          total_bytes: gb(51.2),
+          used_bytes: gb(12),
+        },
+      ],
+    });
+    const extraCheck = await within(dialog).findByRole("checkbox", {
+      name: /Extra 12B/u,
+    });
+    fireEvent.click(extraCheck);
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Unload and load" }),
+    );
+    await waitFor(() => expect(fixture.actions).toHaveLength(1));
+    // GPT-OSS 20B (no longer loaded) was filtered out of unload_first.
+    expect(fixture.actions[0]).toEqual({
+      body: { action: "load", unload_first: ["extra:Q4"] },
+      computerId: "computer-mac",
+      modelId: "llama3.3-70b:Q4_K_M",
+    });
+
+    // A newer snapshot arrives with the same failed status BEFORE the 202 resolves.
+    publishSnapshot(fixture, {
+      ...baseMac,
+      models: [modelView(extraLoaded), baseMac.models[1]!],
+      observed_at: "2026-11-13T10:10:00.000Z",
+    });
+    releaseAction();
+
+    // Row does not stay stuck on "Loading" because observedAt was captured at click time.
+    await waitFor(() =>
+      expect(statusOf("Llama 3.3 70B")).toBe(
+        "Couldn't load · not enough free memory",
+      ),
+    );
+    expect(
+      screen.getByRole("button", { name: "Retry Llama 3.3 70B" }),
+    ).toBeEnabled();
+  });
+
+  it("preserves busy Agent warnings during mixed Make room handoff and shows queued handoff status", async () => {
+    const mac = withModel(macView(), "llama3.3-70b:Q4_K_M", {
+      pi_model: "localmodels-library/llama3.3-70b",
+    });
+    const fixture = setup([mac]);
+    enableReadyPi(fixture);
+    acceptTenantAgentUpdates(fixture.runtime);
+    fixture.runtime.seed.tenantAgents = fixture.runtime.seed.tenantAgents.map(
+      (agent) =>
+        agent.actor.id === "actor-delegate" || agent.actor.id === "actor-codex"
+          ? {
+              ...agent,
+              runtime: {
+                model: "localmodels-library/gpt-oss-20b",
+                placement: {
+                  computer_id: "computer-mac",
+                  runtime_type: "pi",
+                  type: "local",
+                  workspace_grant_id: "grant-linger-workspace",
+                },
+              },
+            }
+          : agent,
+    );
+    await renderPage(fixture, "?computer=computer-mac");
+    await findModels();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Retry Llama 3.3 70B" }),
+    );
+    const dialog = screen.getByRole("dialog", { name: "Make room to load" });
+    fireEvent.click(
+      within(dialog).getByRole("button", { name: "Unload and load" }),
+    );
+    expect(
+      await screen.findByText(
+        "Will switch Jenny's Delegate, Codex to Llama 3.3 70B once it finishes loading.",
+      ),
+    ).toBeVisible();
+
+    // Codex starts working while Jenny's Delegate stays idle.
+    fixture.runtime.seed.tenantAgents = fixture.runtime.seed.tenantAgents.map(
+      (agent) =>
+        agent.actor.id === "actor-codex"
+          ? {
+              ...agent,
+              availability: {
+                active_task_count: 1,
+                label: "Working",
+                status: "online",
+              },
+            }
+          : agent,
+    );
+    fixture.runtime.events.emitSignal({
+      hint: { id: "actor-codex", resource: "agents", tenant_id: tenantId },
+      type: "resource.invalidated",
+    });
+    await waitFor(() =>
+      expect(
+        fixture.runtime.server.requestsTo(
+          "GET",
+          "/v0/tenants/{tenantId}/agent-availability",
+        ).length,
+      ).toBeGreaterThanOrEqual(2),
+    );
+
+    publishSnapshot(
+      fixture,
+      withModel(mac, "llama3.3-70b:Q4_K_M", {
+        endpoint: { base_url: "http://127.0.0.1:18100/v1" },
+        state: "loaded",
+      }),
+    );
+
+    // Idle Agent switches AND busy Agent warning survives instead of being wiped.
+    await waitFor(() =>
+      expect(
+        fixture.runtime.server.requestsTo(
+          "PATCH",
+          "/v0/tenants/{tenantId}/agents/{agentId}",
+        ),
+      ).toHaveLength(1),
+    );
+    expect(
+      await screen.findByText(
+        "Couldn't switch Codex to Llama 3.3 70B while working. Switch once the current turn finishes.",
+      ),
+    ).toBeVisible();
   });
 });

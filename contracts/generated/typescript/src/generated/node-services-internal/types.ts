@@ -1587,15 +1587,19 @@ export interface components {
       | "max"
       | "ultra";
     /**
-     * @description Wire format the Computer found a BYOK upstream endpoint answers, trying the active Runtime's own format first.
+     * @description Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
      * @enum {string}
      */
     ByokProtocol: "openai-chat" | "openai-responses" | "anthropic";
-    /** @description Redacted BYOK configuration metadata reported by the Computer. */
+    /** @description A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path. */
+    ByokUrlPath: string;
+    /** @description Redacted BYOK configuration metadata reported by the Computer. path and endpoint are omitted when empty: a configured summary without them appends nothing there. */
     ByokSummary: {
       configured: boolean;
       protocol?: components["schemas"]["ByokProtocol"];
       base_url?: string;
+      path?: components["schemas"]["ByokUrlPath"];
+      endpoint?: components["schemas"]["ByokUrlPath"];
       model_id?: string;
       context_window?: number;
       key_saved: boolean;
@@ -1610,9 +1614,12 @@ export interface components {
       gateway_url?: string;
       byok: components["schemas"]["ByokSummary"];
     };
-    /** @description Upstream endpoint configuration supplied by the Computer owner. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file. */
+    /** @description Upstream endpoint configuration supplied by the Computer owner. Requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file. */
     ByokInput: {
       base_url: string;
+      path: components["schemas"]["ByokUrlPath"];
+      endpoint: components["schemas"]["ByokUrlPath"];
+      protocol: components["schemas"]["ByokProtocol"];
       api_key?: string;
       model_id: string;
       context_window?: number;
@@ -1625,9 +1632,12 @@ export interface components {
       local_model_id?: components["schemas"]["LocalModelId"];
       byok?: components["schemas"]["ByokInput"];
     };
-    /** @description A BYOK endpoint address and key, enough to list its models. The API key is never persisted in TeamHub or Agent Service. */
+    /** @description A BYOK endpoint address and key, enough to list its models at base_url + path + /models with protocol's key header. The API key is never persisted in TeamHub or Agent Service. */
     ByokEndpointInput: {
       base_url: string;
+      path: components["schemas"]["ByokUrlPath"];
+      endpoint: components["schemas"]["ByokUrlPath"];
+      protocol: components["schemas"]["ByokProtocol"];
       api_key?: string;
       reuse_saved_key?: boolean;
     };
@@ -1641,20 +1651,19 @@ export interface components {
     /** @description The models a BYOK endpoint lists, sorted by id. */
     ByokModelList: {
       /** @description The address that listed them. */
-      base_url: string;
+      url: string;
       models: components["schemas"]["ByokModel"][];
     };
-    /** @description A BYOK endpoint to verify from the Computer for the Runtime that would serve it, which decides the order wire formats are tried. */
+    /** @description A BYOK endpoint to verify with one request from the Computer. */
     ByokTestRequest: {
-      runtime: components["schemas"]["ModelSourceRuntime"];
       byok: components["schemas"]["ByokInput"];
     };
-    /** @description Outcome of probing an upstream BYOK endpoint from the Local Computer. */
+    /** @description Outcome of one request to an upstream BYOK endpoint from the Local Computer. */
     ByokTestResult: {
       ok: boolean;
       protocol: components["schemas"]["ByokProtocol"];
-      /** @description The address that answered, which can add or drop the /anthropic of a gateway that serves OpenAI under /v1 and Anthropic under /anthropic. */
-      base_url: string;
+      /** @description The address the request went to. */
+      url: string;
       model_id: string;
       context_window: number;
     };
@@ -2098,7 +2107,7 @@ export interface components {
         "application/json": components["schemas"]["WikiRefreshCandidateErrorResponse"];
       };
     };
-    /** @description Candidate generation encountered a retryable infrastructure or provider failure. The code WIKI_COMPUTER_OFFLINE means the Wiki owner's Computer is offline; TeamHub waits for it without spending a refresh attempt. The code WIKI_SERVICE_STOPPING means LLM Wiki stopped the generation because its process is restarting; TeamHub runs it again shortly, also without spending an attempt. */
+    /** @description Candidate generation encountered a retryable infrastructure or provider failure. The code WIKI_COMPUTER_OFFLINE means the Wiki owner's Computer is offline; TeamHub waits for it without spending a refresh attempt. The code WIKI_SERVICE_STOPPING means LLM Wiki stopped the generation because its process is restarting; TeamHub runs it again shortly, also without spending an attempt. The code WIKI_RUNTIME_UNAVAILABLE means the owner's Local Computer Runtime is not ready for model calls. */
     WikiOperationRetryable: {
       headers: {
         [name: string]: unknown;
@@ -3143,7 +3152,7 @@ export interface operations {
           /** @description Stable normalizer implementation identity. */
           "X-Normalizer-Name": "llm-wiki-document-markdown";
           /** @description Behavior version; it changes whenever normalized output semantics change. */
-          "X-Normalizer-Version": "2";
+          "X-Normalizer-Version": "3";
           [name: string]: unknown;
         };
         content: {
@@ -3243,7 +3252,7 @@ export interface operations {
         };
       };
       413: components["responses"]["WikiRefreshBadRequest"];
-      /** @description The generated candidate is invalid; do not retry the same refresh. */
+      /** @description The refresh cannot be completed without user action or new inputs; do not retry the same refresh. Codes WIKI_RUNTIME_INCOMPATIBLE and WIKI_RUNTIME_AUTH_REQUIRED indicate that the owner's Local Computer Runtime must be updated or signed in before a later refresh runs. */
       500: {
         headers: {
           [name: string]: unknown;

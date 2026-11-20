@@ -9,6 +9,7 @@ import { loadInstance } from "./instance.js";
 import { updateUserKeys } from "./user-environment.js";
 import { readLiveKitSettings } from "./native-livekit.js";
 import { saveSourceBinding } from "./source-checkout.js";
+import { freePort } from "./ports.js";
 import {
   checkNativeSourceEnvironment,
   nativeSourceInstanceName,
@@ -78,19 +79,123 @@ test("native checkout identities are stable", async () => {
   expect(first.env.TEAMHUB_DATABASE_URL).toContain(
     `:${first.instance.source!.ports.postgres}/simplexai`,
   );
-  const text = await readFile(
-    path.join(first.instance.root, "native.env"),
-    "utf8",
-  );
+  const nativeFile = path.join(first.instance.root, "native.env");
+  const previous = parseEnv(await readFile(nativeFile, "utf8"));
   const second = await prepareNativeConfiguration(f.repo, {
     home: f.home,
     name: "native-test",
   });
   expect(second.instance).toEqual(first.instance);
-  expect(
-    await readFile(path.join(first.instance.root, "native.env"), "utf8"),
-  ).toBe(text);
+
+  // LiveKit is stopped in this fixture. Its unbound port can be taken between
+  // preparations without changing the instance's identity or credentials.
+  const liveKit = (await readLiveKitSettings(second.instance.root))!;
+  const expected: Record<string, string> = {
+    ...previous,
+    LIVEKIT_URL: `ws://127.0.0.1:${liveKit.httpPort}`,
+    LIVEKIT_API_URL: `http://127.0.0.1:${liveKit.httpPort}`,
+  };
+  if (expected.LIVEKIT_URL !== previous.LIVEKIT_URL)
+    expect(second.warnings).toContain(
+      `Port ${new URL(previous.LIVEKIT_URL!).port} is in use by another program; Linger's livekit uses port ${liveKit.httpPort} instead.\n`,
+    );
+  const current = parseEnv(await readFile(nativeFile, "utf8"));
+  const keys = new Set([...Object.keys(expected), ...Object.keys(current)]);
+  // Only name changed fields on failure; native.env also contains secrets.
+  expect([...keys].filter((key) => current[key] !== expected[key])).toEqual([]);
 });
+
+test.each(["O'Neil", "O'Neil`files"])(
+  "native environments preserve paths below %s",
+  async (directory) => {
+    const f = await fixture();
+    const native = await prepareNativeConfiguration(f.repo, {
+      home: path.join(f.home, directory),
+      name: "quoted-home",
+    });
+    const persisted = parseEnv(
+      await readFile(path.join(native.instance.root, "native.env"), "utf8"),
+    );
+    for (const key of [
+      "TEAMHUB_ARTIFACT_STORAGE_ROOT",
+      "AGENT_HOME",
+      "COMPUTER_RELEASE_DIR",
+    ]) {
+      expect(native.env[key]).toContain(directory);
+      expect(persisted[key]).toBe(native.env[key]);
+    }
+  },
+);
+
+test("native environment quoting preserves literal Windows backslashes", async () => {
+  const f = await fixture();
+  const value = String.raw`C:\new\O'Neil\linger`;
+  await writeFile(path.join(f.repo, ".env"), `FIXTURE_PATH=\`${value}\`\n`);
+  const native = await prepareNativeConfiguration(f.repo, {
+    home: f.home,
+    name: "quoted-value",
+  });
+  const persisted = parseEnv(
+    await readFile(path.join(native.instance.root, "native.env"), "utf8"),
+  );
+  expect(native.env.FIXTURE_PATH).toBe(value);
+  expect(persisted.FIXTURE_PATH).toBe(value);
+});
+
+test("native environments reject a value that would consume the next key", async () => {
+  const f = await fixture();
+  const options = { home: f.home, name: "cross-entry-value" };
+  const native = await prepareNativeConfiguration(f.repo, options);
+  const envFile = path.join(native.instance.root, "native.env");
+  const before = await readFile(envFile, "utf8");
+  const value = "'`=a\\n#\\";
+  // As the last entry this is readable, but writing another quoted entry
+  // after it can close its leading quote and absorb the following key.
+  const supplied = `CONTROL=kept\nFIXTURE_VALUE=${value}\n`;
+  expect(parseEnv(supplied)).toEqual({ CONTROL: "kept", FIXTURE_VALUE: value });
+  await writeFile(path.join(f.repo, ".env"), supplied);
+
+  await expect(prepareNativeConfiguration(f.repo, options)).rejects.toThrow(
+    "Source environment contains unsupported characters.",
+  );
+  expect(await readFile(envFile, "utf8")).toBe(before);
+});
+
+test.each(["'quoted", '"quoted', "`quoted"])(
+  "native environments preserve a representable leading quote in %s",
+  async (value) => {
+    const f = await fixture();
+    const delimiter = value.startsWith("'") ? '"' : "'";
+    await writeFile(
+      path.join(f.repo, ".env"),
+      `FIXTURE_VALUE=${delimiter}${value}${delimiter}\nFOLLOWING=kept\n`,
+    );
+    const native = await prepareNativeConfiguration(f.repo, {
+      home: f.home,
+      name: "leading-quote",
+    });
+    const persisted = parseEnv(
+      await readFile(path.join(native.instance.root, "native.env"), "utf8"),
+    );
+    expect(persisted.FIXTURE_VALUE).toBe(value);
+    expect(persisted.FOLLOWING).toBe("kept");
+  },
+);
+
+test("native environments still reject multiline values without publishing them", async () => {
+  const f = await fixture();
+  await writeFile(path.join(f.repo, ".env"), "FIXTURE_VALUE='line\nbreak'\n");
+  await expect(
+    prepareNativeConfiguration(f.repo, {
+      home: f.home,
+      name: "multiline-value",
+    }),
+  ).rejects.toThrow("Source environment contains unsupported characters.");
+  await expect(
+    readFile(path.join(f.home, "instances/multiline-value/native.env")),
+  ).rejects.toMatchObject({ code: "ENOENT" });
+});
+
 test("native environment checks do not require or report Docker", async () => {
   const f = await fixture();
   const report = await checkNativeSourceEnvironment({
@@ -210,65 +315,117 @@ test("an owned native instance follows a new checkout and keeps its data", async
   expect(saved?.releaseDir).toBe(next);
   expect(saved?.source).toEqual(moved.instance.source);
 });
-test("a resumed instance moves off ports another program took", async () => {
+// Four real configurations run Windows ACL and process checks, which can
+// exceed the ordinary Windows test timeout.
+test(
+  "a resumed instance moves off ports another program took",
+  async () => {
+    const f = await fixture();
+    const options = { home: f.home, name: "native-test" };
+    const first = await prepareNativeConfiguration(f.repo, {
+      ...options,
+      port: await freePort(new Set()),
+    });
+    const before = first.instance.source!.ports;
+    const livekit = (await readLiveKitSettings(first.instance.root))!;
+    await occupy(before.web);
+    await occupy(before.teamhub);
+    await occupy(before.postgres);
+    await occupy(livekit.httpPort);
+    await occupy(livekit.rtcPort, "udp");
+
+    const second = await prepareNativeConfiguration(f.repo, options);
+    const after = second.instance.source!.ports;
+    for (const name of ["web", "teamhub", "postgres"] as const)
+      expect(after[name]).not.toBe(before[name]);
+    expect(after.nodeServices).toBe(before.nodeServices);
+    expect(after.document).toBe(before.document);
+    // Without an owner account nothing keeps the origin yet, so it moves too.
+    expect(second.instance.port).toBe(after.web);
+    expect(second.instance.origin).toBe(`http://localhost:${after.web}`);
+    expect(await loadInstance(options)).toEqual(second.instance);
+    expect(second.env.WEB_PUBLIC_ORIGIN).toBe(second.instance.origin);
+    expect(second.env.TEAMHUB_HTTP_ADDRESS).toBe(`127.0.0.1:${after.teamhub}`);
+    expect(second.env.TEAMHUB_DATABASE_URL).toContain(
+      `:${after.postgres}/simplexai`,
+    );
+    const moved = (await readLiveKitSettings(first.instance.root))!;
+    expect(moved.httpPort).not.toBe(livekit.httpPort);
+    expect(moved.rtcPort).not.toBe(livekit.rtcPort);
+    expect(moved.apiSecret).toBe(livekit.apiSecret);
+    expect(second.env.LIVEKIT_URL).toBe(`ws://127.0.0.1:${moved.httpPort}`);
+    expect(second.warnings.join("")).toContain(
+      `Port ${before.teamhub} is in use by another program; Linger's teamhub uses port ${after.teamhub} instead.`,
+    );
+    expect(second.warnings).toHaveLength(5);
+
+    // Once the owner account exists, a Computer this installer enrolled keeps
+    // the origin: the web port stays and its service reports the program.
+    await writeFile(
+      path.join(first.instance.root, "local-account.json"),
+      JSON.stringify({ provisioned: true }),
+      { mode: 0o600 },
+    );
+    await occupy(after.web);
+    const third = await prepareNativeConfiguration(f.repo, options);
+    expect(third.instance.port).toBe(after.web);
+    expect(third.instance.source!.ports).toEqual(after);
+    expect(third.warnings).toEqual([]);
+
+    // A database set aside from an older install marks the account to be made
+    // again, but that install's Computer still keeps the origin.
+    await writeFile(
+      path.join(first.instance.root, "local-account.json"),
+      JSON.stringify({ provisioned: false }),
+      { mode: 0o600 },
+    );
+    await mkdir(path.join(first.instance.root, "simplex-backup-earlier"));
+    const fourth = await prepareNativeConfiguration(f.repo, options);
+    expect(fourth.instance.port).toBe(after.web);
+    expect(fourth.warnings).toEqual([]);
+  },
+  process.platform === "win32" ? 150_000 : undefined,
+);
+test("the desktop's web origin moves off a taken port after the account exists", async () => {
   const f = await fixture();
-  const options = { home: f.home, name: "native-test" };
+  const options = { home: f.home, name: "desktop", externalComputer: true };
   const first = await prepareNativeConfiguration(f.repo, options);
   const before = first.instance.source!.ports;
-  const livekit = (await readLiveKitSettings(first.instance.root))!;
-  await occupy(before.web);
-  await occupy(before.teamhub);
-  await occupy(before.postgres);
-  await occupy(livekit.httpPort);
-  await occupy(livekit.rtcPort, "udp");
-
-  const second = await prepareNativeConfiguration(f.repo, options);
-  const after = second.instance.source!.ports;
-  for (const name of ["web", "teamhub", "postgres"] as const)
-    expect(after[name]).not.toBe(before[name]);
-  expect(after.nodeServices).toBe(before.nodeServices);
-  expect(after.document).toBe(before.document);
-  // Without an owner account nothing keeps the origin yet, so it moves too.
-  expect(second.instance.port).toBe(after.web);
-  expect(second.instance.origin).toBe(`http://localhost:${after.web}`);
-  expect(await loadInstance(options)).toEqual(second.instance);
-  expect(second.env.WEB_PUBLIC_ORIGIN).toBe(second.instance.origin);
-  expect(second.env.TEAMHUB_HTTP_ADDRESS).toBe(`127.0.0.1:${after.teamhub}`);
-  expect(second.env.TEAMHUB_DATABASE_URL).toContain(
-    `:${after.postgres}/simplexai`,
-  );
-  const moved = (await readLiveKitSettings(first.instance.root))!;
-  expect(moved.httpPort).not.toBe(livekit.httpPort);
-  expect(moved.rtcPort).not.toBe(livekit.rtcPort);
-  expect(moved.apiSecret).toBe(livekit.apiSecret);
-  expect(second.env.LIVEKIT_URL).toBe(`ws://127.0.0.1:${moved.httpPort}`);
-  expect(second.warnings.join("")).toContain(
-    `Port ${before.teamhub} is in use by another program; Linger's teamhub uses port ${after.teamhub} instead.`,
-  );
-  expect(second.warnings).toHaveLength(5);
-
-  // Once the owner account exists, the browser session and the desktop app
-  // keep the origin: the web port stays and its service reports the program.
   await writeFile(
     path.join(first.instance.root, "local-account.json"),
     JSON.stringify({ provisioned: true }),
     { mode: 0o600 },
   );
-  await occupy(after.web);
-  const third = await prepareNativeConfiguration(f.repo, options);
-  expect(third.instance.port).toBe(after.web);
-  expect(third.instance.source!.ports).toEqual(after);
-  expect(third.warnings).toEqual([]);
-
-  // A database set aside from an older install marks the account to be made
-  // again, but that install's desktop still keeps the origin.
-  await writeFile(
-    path.join(first.instance.root, "local-account.json"),
-    JSON.stringify({ provisioned: false }),
-    { mode: 0o600 },
-  );
+  // A database set aside from an older install does not hold it either.
   await mkdir(path.join(first.instance.root, "simplex-backup-earlier"));
-  const fourth = await prepareNativeConfiguration(f.repo, options);
-  expect(fourth.instance.port).toBe(after.web);
-  expect(fourth.warnings).toEqual([]);
+  await occupy(before.web);
+  // The desktop update that finds the port taken also brings a new checkout.
+  const next = path.join(f.home, "next");
+  await mkdir(path.join(next, "scripts"), { recursive: true });
+  for (const file of ["package.json", "scripts/source-native.mjs"])
+    await writeFile(
+      path.join(next, file),
+      await readFile(path.join(f.repo, file)),
+    );
+
+  const second = await prepareNativeConfiguration(next, {
+    ...options,
+    rebindSource: true,
+  });
+  const after = second.instance.source!.ports;
+  expect(after.web).not.toBe(before.web);
+  expect(second.instance.port).toBe(after.web);
+  expect(second.instance.origin).toBe(`http://localhost:${after.web}`);
+  expect(second.env.WEB_PUBLIC_ORIGIN).toBe(second.instance.origin);
+  expect(second.env.WEB_HTTP_PORT).toBe(String(after.web));
+  expect(second.warnings.join("")).toContain(
+    `Port ${before.web} is in use by another program; Linger's web uses port ${after.web} instead.`,
+  );
+  // The moved origin is saved at once; the checkout only once the services
+  // serve from it.
+  const stored = await loadInstance(options);
+  expect(stored?.origin).toBe(second.instance.origin);
+  expect(stored?.source?.ports).toEqual(after);
+  expect(stored?.releaseDir).toBe(f.repo);
+  expect(stored?.source?.repo).toBe(f.repo);
 });

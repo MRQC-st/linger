@@ -1,6 +1,7 @@
 package localmodels
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -277,8 +278,13 @@ func NewModelSource(options ModelSourceOptions) *ModelSource {
 	}
 }
 
+// byokStdinPayload sends path and endpoint even when empty: an empty one
+// appends nothing, which localmodels tells apart from a missing field.
 type byokStdinPayload struct {
 	BaseURL       string  `json:"baseUrl"`
+	Path          string  `json:"path"`
+	Endpoint      string  `json:"endpoint"`
+	Protocol      string  `json:"protocol"`
 	APIKey        string  `json:"apiKey,omitempty"`
 	ModelID       string  `json:"modelId"`
 	ContextWindow *uint64 `json:"contextWindow,omitempty"`
@@ -291,6 +297,9 @@ func encodeByokStdin(input *wire.ByokConfigInput) ([]byte, error) {
 	}
 	return json.Marshal(byokStdinPayload{
 		BaseURL:       input.BaseURL,
+		Path:          input.Path,
+		Endpoint:      input.Endpoint,
+		Protocol:      input.Protocol,
 		APIKey:        input.APIKey,
 		ModelID:       input.ModelID,
 		ContextWindow: input.ContextWindow,
@@ -335,34 +344,30 @@ func (m *ModelSource) Status(ctx context.Context) (wire.ModelSourceStatus, error
 		}
 	}
 	if exitCode != 0 {
+		if unsupported := unsupportedSourceCommand(exitCode, stdout); unsupported != nil {
+			return wire.ModelSourceStatus{}, unsupported
+		}
 		return wire.ModelSourceStatus{}, parseToolFailure(stdout, CodeToolFailed, "Could not read model source status on this Computer.")
 	}
 	return parseSourceStatus(stdout)
 }
 
-// TestByok probes a BYOK upstream endpoint for runtime, finding the wire
-// format and address it answers, without persisting credentials or mutating
-// the active model source.
-func (m *ModelSource) TestByok(ctx context.Context, runtime string, input wire.ByokConfigInput) (wire.ByokTestResult, error) {
-	if !slices.Contains([]string{"claude", "codex", "pi"}, runtime) {
-		return wire.ByokTestResult{}, &ModelSourceError{
-			Code:    "MODEL_SOURCE_INVALID",
-			Message: "Unsupported AI runtime.",
-		}
-	}
+// TestByok sends one request to the BYOK endpoint's address in its wire
+// format, without persisting credentials or mutating the active model source.
+func (m *ModelSource) TestByok(ctx context.Context, input wire.ByokConfigInput) (wire.ByokTestResult, error) {
 	var doc struct {
 		Protocol      string `json:"protocol"`
-		BaseURL       string `json:"base_url"`
+		URL           string `json:"url"`
 		ModelID       string `json:"model_id"`
 		ContextWindow uint64 `json:"context_window"`
 	}
-	if err := m.runEndpointCommand(ctx, input, modelSourceCheckSchema, &doc, "check", "--runtime", runtime); err != nil {
+	if err := m.runEndpointCommand(ctx, input, modelSourceCheckSchema, &doc, "check"); err != nil {
 		return wire.ByokTestResult{}, err
 	}
 	return wire.ByokTestResult{
 		Ok:            true,
 		Protocol:      doc.Protocol,
-		BaseURL:       doc.BaseURL,
+		URL:           doc.URL,
 		ModelID:       doc.ModelID,
 		ContextWindow: doc.ContextWindow,
 	}, nil
@@ -404,6 +409,9 @@ func (m *ModelSource) runEndpointCommand(ctx context.Context, input wire.ByokCon
 			Message:   "Timed out while reaching the BYOK endpoint.",
 			Retryable: true,
 		}
+	}
+	if unsupported := unsupportedSourceCommand(exitCode, stdout); unsupported != nil {
+		return unsupported
 	}
 	var outcome struct {
 		Schema  string `json:"schema"`
@@ -506,6 +514,9 @@ func (m *ModelSource) Apply(ctx context.Context, apply ModelSourceApply) (wire.M
 		}
 	}
 	if exitCode != 0 {
+		if unsupported := unsupportedSourceCommand(exitCode, stdout); unsupported != nil {
+			return wire.ModelSourceStatus{}, unsupported
+		}
 		return wire.ModelSourceStatus{}, parseToolFailure(stdout, CodeToolFailed, "Could not switch model source on this Computer.")
 	}
 	status, err := parseSourceStatus(stdout)
@@ -622,6 +633,20 @@ func parseSourceStatus(stdout []byte) (wire.ModelSourceStatus, error) {
 		status.GatewayURL = *doc.GatewayURL
 	}
 	return status, nil
+}
+
+// unsupportedSourceCommand detects a localmodels CLI without the source
+// subcommand, which exits with CLI usage status 2 and empty stdout whereas
+// structured source failures emit JSON on stdout.
+func unsupportedSourceCommand(exitCode int, stdout []byte) error {
+	if exitCode == 2 && len(bytes.TrimSpace(stdout)) == 0 {
+		return &ModelSourceError{
+			Code:      CodeModelSourceUnsupported,
+			Message:   "The localmodels tool on this Computer does not support model sources.",
+			Retryable: false,
+		}
+	}
+	return nil
 }
 
 func parseToolFailure(stdout []byte, fallbackCode, fallbackMessage string) error {

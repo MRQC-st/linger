@@ -74,10 +74,13 @@ skills:
         version: 1.0.0
         package_path: builtin/taste/1.0.0
   - skill_id: simplexai_proactive_response
-    bootstrap_manifest_id: skill_manifest_simplexai_proactive_response_1_0_5
+    bootstrap_manifest_id: skill_manifest_simplexai_proactive_response_1_0_6
     default_agent_types:
       - anotherme
     manifests:
+      - manifest_id: skill_manifest_simplexai_proactive_response_1_0_6
+        version: 1.0.6
+        package_path: builtin/proactive-response/1.0.6
       - manifest_id: skill_manifest_simplexai_proactive_response_1_0_5
         version: 1.0.5
         package_path: builtin/proactive-response/1.0.5
@@ -228,14 +231,14 @@ skills:
         version: 1.0.0
         package_path: builtin/personal-profile/1.0.0
   - skill_id: simplexai_humanlike_browse
-    bootstrap_manifest_id: skill_manifest_simplexai_humanlike_browse_1_0_8
+    bootstrap_manifest_id: skill_manifest_simplexai_humanlike_browse_1_0_9
     default_agent_types:
       - anotherme
       - general
     manifests:
-      - manifest_id: skill_manifest_simplexai_humanlike_browse_1_0_8
-        version: 1.0.8
-        package_path: builtin/humanlike-browse/1.0.8
+      - manifest_id: skill_manifest_simplexai_humanlike_browse_1_0_9
+        version: 1.0.9
+        package_path: builtin/humanlike-browse/1.0.9
       - manifest_id: skill_manifest_simplexai_humanlike_browse_1_0_4
         version: 1.0.4
         package_path: builtin/humanlike-browse/1.0.4

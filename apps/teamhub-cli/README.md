@@ -40,17 +40,27 @@ An Agent reads, edits and manages every Document its Human has; no access reques
 
 Write commands that accept `--operation-id` should use one unique ID per logical operation. The CLI keeps no local receipts: after an unknown outcome, rerun the same command and input with the operation ID the error printed, and TeamHub returns the original result. Without `--operation-id` every run is a new write. An operation ID does not replace CAS. `duplicate_request: true` means TeamHub reused the original result and comes with a `reason`; neither a conflict nor an unknown outcome is a success. When a Connected Apps write has an unknown outcome, check the external application first; the CLI never resends it.
 
+A TeamHub write with an operation ID also reports `outcome_unknown` when its successful HTTP response has an interrupted, malformed, oversized, or non-object JSON body. The error preserves the same operation ID for a deliberate retry; receiving success headers alone does not cause the CLI to invent a result or resend the write. A successful `204 No Content` remains a complete empty result.
+
 Task completion uses only the generation, attempt and input revision accepted before work started; Runtime-managed configuration freezes them. `task list` returns authorized summaries only; it does not replace the original Task input or refresh the submission baseline of an old result.
 
 The current entry points are the ones help lists.
 
 `agent list` and `agent get --agent-id <actor-id>` show the General Agents under a Sponsor. `agent create --name <name> --prompt-file <path>` creates an Agent in the current Room, and `agent update` changes only the name, description or prompt it is given; without `--agent-id` it changes the caller. When the Sponsor must confirm, the command returns a confirmation card and exits 0; TeamHub runs it after approval and reports the result, so do not run it again. `room invite --agent-id <actor-id>` adds an existing Agent from `agent list` to the current Room at once, with the Sponsor's authority; a Direct Room or Thread keeps its members. A Task context cannot use these commands.
 
+`room handoff --inbox room:<room-id> --content <instruction>` lets Another Me, in its direct chat and in a turn its Human started by writing or deciding a card, hand that request to itself in another Room where both are members. TeamHub posts a hidden handoff there that wakes Another Me's Context in that Room, which then posts and mentions Agents itself; the direct chat never writes in that Room. Results come back with `message direct`.
+
 ```bash
 teamhub room invite --agent-id <actor-id> --json
 teamhub agent create --name 'Reviewer' --description 'Checks patches' --prompt-file ./reviewer.md --json
 teamhub agent update --agent-id <actor-id> --prompt-file ./reviewer.md --json
 ```
+
+## Windows Subsystem for Linux
+
+When Pi runs the Desktop TeamHub CLI from WSL, use Linux paths directly for Room message attachments (`--attach` and JSON `content-path`), command input files (`--file`, `--prompt-file`), and `docs` file and image arguments. Quote paths with spaces. Message text is passed through as text.
+
+Connected application commands may have their own file options. For those options, convert an absolute Linux path explicitly, for example `gdrive download ... --output "$(wslpath -w /home/me/report.pdf)"`.
 
 ## Connected applications
 
@@ -60,6 +70,6 @@ Mail `--markdown` is converted to HTML by TeamHub; only `--attach` adds attachme
 
 GitHub reads the connected account, its repositories, issues and pull requests at once; `github comment` and `github create-issue` wait for the sponsor's confirmation card.
 
-Other Connected Apps (such as Canva or Linear) have no dedicated commands and are called through `teamhub apps search/execute`.
+Other Connected Apps (such as Canva or Linear) have no dedicated commands and are called through `teamhub apps search/execute`. TeamHub runs the tools it knows as reads at once, including Linear's list, get and search tools and a `LINEAR_RUN_QUERY_OR_MUTATION` document that declares only queries; every other call waits for the sponsor's confirmation card.
 
 `teamhub apps connect <app-key>` asks for access to any Connected App that supports Agent tools; without an authorized account it posts an authorization card in the current chat. `teamhub apps auto-reminders list|set` lists or toggles automatic reminders for the Sponsor's own connections.

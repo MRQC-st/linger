@@ -1,3 +1,4 @@
+import path from "node:path";
 import { expect, it, vi } from "vitest";
 import { inspectSetup } from "./setup-plan.js";
 
@@ -43,19 +44,20 @@ const runner = (value: object = upstream()) =>
   vi.fn(async () => ({ code: 0, stdout: JSON.stringify(value), stderr: "" }));
 it("delegates all hardware policy, runtime detection, estimates and recommendation upstream", async () => {
   const localmodels = runner();
+  const home = path.resolve("/owned");
   const report = await inspectSetup({
-    home: "/owned",
+    home,
     localmodels,
   });
   expect(localmodels).toHaveBeenCalledWith(
-    "/owned",
+    home,
     [
       "setup",
       "inspect",
       "--root",
-      "/owned/runtime/harness",
+      path.join(home, "runtime", "harness"),
       "--model-base-dir",
-      "/owned/runtime/localmodels/models",
+      path.join(home, "runtime", "localmodels", "models"),
       "--decision",
       "none",
       "--offline",
@@ -349,4 +351,21 @@ it("inspects with GPU sharing unless sharing was explicitly declined", async () 
   expect(localmodels.mock.calls[1]?.[1]).toContain("--share-gpu");
   await inspectSetup({ localmodels });
   expect(localmodels.mock.calls[2]?.[1]).toContain("--share-gpu");
+});
+
+it("checks the installation target while keeping tool state in the existing home", async () => {
+  const home = path.resolve("cached-home");
+  const targetHome = path.resolve("candidate");
+  const localmodels = runner();
+  await inspectSetup({ home, targetHome, localmodels });
+  expect(localmodels).toHaveBeenCalledWith(
+    home,
+    expect.arrayContaining([
+      "--root",
+      path.join(targetHome, "runtime", "harness"),
+      "--model-base-dir",
+      path.join(targetHome, "runtime", "localmodels", "models"),
+    ]),
+    expect.anything(),
+  );
 });

@@ -86,11 +86,33 @@ Go service owning Human HTTP/SSE, Agent callbacks, and active product state.
 
 - A Room permits 100 Routines: recurring ones count while they exist, and
   one-shot ones count until they fire. There is no separate one-shot limit.
+  Interval Routines store `interval_minutes` (10 to 10080 in 10-minute
+  increments), advance on a fixed `dueAt + k * interval` grid without drift or
+  catch-up, and skip overlapping scheduled fires while an undelivered quiet
+  wake or non-terminal trigger Message from the last 24 hours remains
+  unfinished. Agent API, CLI, and Live Voice standardize on `every_n_minutes` +
+  `interval_minutes` (and still accept `every_n_hours` + `interval_hours` on
+  input for compatibility with older CLI/Desktop builds); Web API keeps
+  `every_n_hours` + `interval_hours` for whole-hour intervals and uses
+  `every_n_minutes` + `interval_minutes` for non-whole-hour intervals.
 
 - Room input acceptance: Runtime State validates canonical
   conversation/targeted agent_runtime inputs atomically with Local Run and cursor.
   Document reads are live-latest and mutations retain CAS. CLI business
   operations use current Agent/resource authority, not Context/Run prerequisites.
+
+- An Agent writes only in its Context Room. To act in another Room, an
+  AnotherMe in its direct chat uses Room handoff (`internal/agentroomhandoff`,
+  `teamhub room handoff`): TeamHub posts a hidden `agent_runtime` message,
+  authored by the Human and mentioning the AnotherMe, in another live Room
+  where both are members, and it wakes the AnotherMe's Context there, which
+  then speaks for itself. Only a Run whose inputs carry a message the Human
+  wrote, or a card they decided, in the direct chat may hand off
+  (`X-TeamHub-Run-Id`); proactive wakes, Routines and Task callbacks may not,
+  because they often carry outside content. A refusal names its reason in an
+  error issue, which the CLI shows the Agent. The handoff body is hidden from the Web timeline but other
+  Agents in that Room can read it. Results come back through
+  `send_direct_message`.
 
 - Go generates only types for the contracts TeamHub serves. Mount each
   operation in the caller's route table in `internal/app/routes_*.go`;

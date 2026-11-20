@@ -187,9 +187,12 @@ const versions = (registry: TestLocalComputerRegistry) =>
 describe("Runner Gateway local models", () => {
   // A Computer sends runner.local_models only when the welcome names the
   // family; a release before 0.52.0 rejects the unknown welcome key, so it
-  // is welcomed without it and keeps receiving its target_release.
+  // is welcomed without it and keeps receiving its target_release. BYOK
+  // paths are named only to a release that decodes them.
   it.each([
-    ["dev", ["local_models"]],
+    ["dev", ["local_models", "byok_endpoint"]],
+    ["0.56.0", ["local_models", "byok_endpoint"]],
+    ["0.55.0", ["local_models"]],
     ["0.52.0", ["local_models"]],
     ["0.51.0", undefined],
   ])(
@@ -475,8 +478,8 @@ describe("Runner Gateway local models", () => {
     await expect(cancelling).rejects.toBeInstanceOf(LocalComputerOfflineError);
   });
 
-  it("gates no_autoload download on Computer 0.55.0 and forwards it once supported", async () => {
-    const old = await connect(undefined, "0.54.0");
+  it("gates no_autoload download on Computer 0.57.0 and forwards it once supported", async () => {
+    const old = await connect(undefined, "0.56.0");
     await old.report(1);
     await expect(
       old.gateway.actOnLocalModels({
@@ -488,7 +491,7 @@ describe("Runner Gateway local models", () => {
       }),
     ).rejects.toBeInstanceOf(LocalComputerCapabilityError);
 
-    const current = await connect(undefined, "0.55.0");
+    const current = await connect(undefined, "0.57.0");
     await current.report(1);
     const downloading = current.gateway.actOnLocalModels({
       ...target,
