@@ -18,6 +18,7 @@ import {
   type Skill,
 } from "@earendil-works/pi-coding-agent";
 import { buildSystemPrompt } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/system-prompt.js";
+import { SETTINGS_DEFAULTS } from "../node_modules/@earendil-works/pi-coding-agent/dist/core/settings-defaults.js";
 import {
   renderServersSection,
   type McpServerListing,
@@ -118,7 +119,7 @@ it("keeps Pi's public MCP extension bound to private Operation proxies with defe
         assert.equal(entry.config.exposure, "deferred");
         assert.ok(entry.config.description && entry.config.description.length > 0);
       }
-      assert.match(config.servers[0].config.description, /Desktop automation/);
+      assert.match(config.servers[0].config.description, /desktop and browser UI script automation \\(ui_exec, ui_reset\\)/i);
       assert.match(config.servers[1].config.description, /Playwright browser/);
       assert.equal(config.servers[2].config.description, "Custom MCP tools");
       for(const server of [
@@ -696,5 +697,64 @@ describe("managed Pi compaction reasoning and budget bounds", () => {
       },
     });
     expect(cloudOutcome).toBeUndefined();
+  });
+
+  it("inherits Pi SETTINGS_DEFAULTS.retry when user retry settings are omitted", async () => {
+    const model = {
+      provider: "localmodels",
+      id: "spark-x2.6-4b-q4km",
+      api: "openai-completions",
+      contextWindow: 65_536,
+      maxTokens: 32_768,
+      reasoning: true,
+    };
+    let capturedRetry: unknown;
+    const event = {
+      type: "session_before_compact",
+      preparation: {
+        firstKeptEntryId: "e1",
+        messagesToSummarize: [],
+        turnPrefixMessages: [],
+        isSplitTurn: false,
+        tokensBefore: 50_000,
+        previousSummary: undefined,
+        fileOps: {
+          read: new Set<string>(),
+          written: new Set<string>(),
+          edited: new Set<string>(),
+        },
+        settings: {
+          enabled: true,
+          reserveTokens: 16_384,
+          keepRecentTokens: 20_000,
+        },
+      },
+      branchEntries: [],
+      customInstructions: undefined,
+      reason: "threshold",
+      willRetry: false,
+      signal: new AbortController().signal,
+    };
+    await handleSessionBeforeCompact(
+      event,
+      { model, thinkingLevel: "high" },
+      {
+        configuredContextWindow: 65_536,
+        compactFn: async (...args: unknown[]) => {
+          capturedRetry = args[9];
+          return {
+            summary: "ok",
+            firstKeptEntryId: "e1",
+            tokensBefore: 50_000,
+          };
+        },
+      },
+    );
+    expect(capturedRetry).toEqual({
+      enabled: SETTINGS_DEFAULTS.retry.enabled,
+      maxRetries: SETTINGS_DEFAULTS.retry.maxRetries,
+      baseDelayMs: SETTINGS_DEFAULTS.retry.baseDelayMs,
+      maxAgentDelayMs: SETTINGS_DEFAULTS.retry.maxAgentDelayMs,
+    });
   });
 });

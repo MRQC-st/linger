@@ -23,6 +23,12 @@ const { prepareCompaction } = await import(
     import.meta.url,
   ).href
 );
+const { SETTINGS_DEFAULTS } = await import(
+  new URL(
+    "../node_modules/@earendil-works/pi-coding-agent/dist/core/settings-defaults.js",
+    import.meta.url,
+  ).href
+);
 
 const CONSTRAINED_CONTEXT_WINDOW_MAX = 128 * 1024;
 const SMALL_CONTEXT_WINDOW_MAX = 64 * 1024;
@@ -35,7 +41,7 @@ const BOUNDED_COMPACTION_HINT =
 
 const MANAGED_MCP_DESCRIPTIONS = {
   computer:
-    "Desktop automation tools for local apps, windows, input, screenshots, and scripts",
+    "Isolated desktop and browser UI script automation (ui_exec, ui_reset)",
   browser:
     "Playwright browser automation tools for web pages, navigation, snapshots, clicks, typing, and tabs",
 };
@@ -51,13 +57,6 @@ const BASE_TOOL_ORDER = [
   "ls",
   "tool_search",
 ];
-
-const DEFAULT_COMPACTION_RETRY = {
-  enabled: true,
-  maxRetries: 3,
-  baseDelayMs: 2_000,
-  maxAgentDelayMs: 60_000,
-};
 
 const THINKING_LEVEL_RANK = {
   off: 0,
@@ -372,24 +371,13 @@ export function resolveCompactionPolicy(
 }
 
 function resolveCompactionRetrySettings(rawRetry) {
+  const defaults = SETTINGS_DEFAULTS.retry;
   const retry = rawRetry && typeof rawRetry === "object" ? rawRetry : {};
   return {
-    enabled:
-      typeof retry.enabled === "boolean"
-        ? retry.enabled
-        : DEFAULT_COMPACTION_RETRY.enabled,
-    maxRetries:
-      typeof retry.maxRetries === "number" && retry.maxRetries >= 0
-        ? retry.maxRetries
-        : DEFAULT_COMPACTION_RETRY.maxRetries,
-    baseDelayMs:
-      typeof retry.baseDelayMs === "number" && retry.baseDelayMs >= 0
-        ? retry.baseDelayMs
-        : DEFAULT_COMPACTION_RETRY.baseDelayMs,
-    maxAgentDelayMs:
-      typeof retry.maxAgentDelayMs === "number" && retry.maxAgentDelayMs >= 0
-        ? retry.maxAgentDelayMs
-        : DEFAULT_COMPACTION_RETRY.maxAgentDelayMs,
+    enabled: retry.enabled ?? defaults.enabled,
+    maxRetries: retry.maxRetries ?? defaults.maxRetries,
+    baseDelayMs: retry.baseDelayMs ?? defaults.baseDelayMs,
+    maxAgentDelayMs: retry.maxAgentDelayMs ?? defaults.maxAgentDelayMs,
   };
 }
 
