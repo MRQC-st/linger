@@ -47,7 +47,7 @@ esac
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(result.Diagnostics) != 3 || result.Diagnostics[0].Status != "ready" || result.Installations["codex"].ExecutablePath != canonical {
+	if len(result.Diagnostics) != 4 || result.Diagnostics[0].Status != "ready" || result.Installations["codex"].ExecutablePath != canonical {
 		t.Fatalf("result=%+v", result)
 	}
 }
@@ -499,5 +499,20 @@ func TestNormalizeRuntimeModelsResolvesDefaultReasoningEffort(t *testing.T) {
 		if model.DefaultReasoningEffort != want[model.ID] {
 			t.Fatalf("%s default_reasoning_effort = %q, want %q", model.ID, model.DefaultReasoningEffort, want[model.ID])
 		}
+	}
+}
+
+func TestGatewayDiagnosticsLeaveOutAnAntigravityThatIsNotInstalled(t *testing.T) {
+	codex := RuntimeDiagnostic{Type: "codex", Status: "ready"}
+	missing := RuntimeDiagnostic{Type: "antigravity", Status: "not_installed"}
+	signedOut := RuntimeDiagnostic{Type: "antigravity", Status: "authentication_required"}
+	if got := GatewayDiagnostics([]RuntimeDiagnostic{codex, missing}); len(got) != 1 || got[0].Type != "codex" {
+		t.Fatalf("missing Antigravity was sent: %+v", got)
+	}
+	if got := GatewayDiagnostics([]RuntimeDiagnostic{codex, signedOut}); len(got) != 2 {
+		t.Fatalf("installed Antigravity was dropped: %+v", got)
+	}
+	if got := GatewayDiagnostics([]RuntimeDiagnostic{missing}); len(got) != 1 {
+		t.Fatalf("the only diagnostic was dropped: %+v", got)
 	}
 }

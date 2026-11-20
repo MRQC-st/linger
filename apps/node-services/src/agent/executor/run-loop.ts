@@ -382,7 +382,8 @@ export class RunLoop {
     this.#runtimeType =
       options.runtimeName === "codex" ||
       options.runtimeName === "claude" ||
-      options.runtimeName === "pi"
+      options.runtimeName === "pi" ||
+      options.runtimeName === "antigravity"
         ? options.runtimeName
         : undefined;
     this.#runtimeSession = options.runtimeSession;
@@ -1375,7 +1376,7 @@ export class RunLoop {
       this.#finishRevokedExecution(execution);
       return;
     }
-    const fallbackFailure = await this.#deliverFallbackReplyIfNeeded(
+    const terminal = await this.#completedTerminal(
       execution,
       finalResponse,
       replyDelivery,
@@ -1384,12 +1385,6 @@ export class RunLoop {
       this.#finishRevokedExecution(execution);
       return;
     }
-    const terminal = this.#completedTerminal(
-      runId,
-      finalResponse,
-      replyDelivery,
-      fallbackFailure,
-    );
     this.#logger.log("info", "local_run.finish_started", {
       runId,
       resultCode: terminal.type,
@@ -1745,9 +1740,10 @@ export class RunLoop {
 
   /**
    * Surfaces non-empty final assistant text to the target Room or Thread when
-   * a Human mentioned the Agent and the Runtime completed without invoking the
-   * message command. Empty or pure-thinking output stays undelivered so
-   * `#completedTerminal` fails with `reply_not_sent`.
+   * a Human mentioned the Agent, the Runtime completed without invoking the
+   * message command, and TeamHub confirmed no reply landed. Empty or
+   * pure-thinking output stays undelivered so `#completedTerminal` fails with
+   * `reply_not_sent`.
    */
   async #deliverFallbackReplyIfNeeded(
     execution: LocalRunExecution,
@@ -1814,21 +1810,43 @@ export class RunLoop {
   }
 
   /**
-   * A Room Agent speaks through TeamHub message writes, or fallback Room
-   * delivery when a Human mentioned it and the Runtime produced deliverable
-   * final assistant text without invoking the message command. A finished
-   * Provider turn fails when every attempted write failed (`reply_undelivered`)
-   * or when a waiting Human still has no reply (`reply_not_sent` or
-   * `response_too_large`). Task Runs report through their final response.
+   * A Room Agent speaks through TeamHub message writes. Because activity
+   * classification inspects shell text for display and can miss compound
+   * scripts or decision cards, TeamHub confirms whether a visible reply landed
+   * before failing the Run or falling back to final assistant text. When
+   * TeamHub confirms no reply landed and the Agent never tried to write while a
+   * Human who mentioned it waits, non-empty deliverable final assistant text is
+   * surfaced via fallback Room delivery. A finished Provider turn fails when
+   * every attempted write failed (`reply_undelivered`) or when a waiting Human
+   * still has no reply (`reply_not_sent` or `response_too_large`). Task Runs
+   * report through their final response.
    */
-  #completedTerminal(
-    runId: string,
+  async #completedTerminal(
+    execution: LocalRunExecution,
     finalResponse: string,
     replyDelivery: ReplyDelivery,
-    fallbackFailure?: "response_too_large",
-  ): LocalRunTerminal {
+  ): Promise<LocalRunTerminal> {
+    const { runId } = execution;
     const roomRun = this.#executionContextRef?.kind === "meta";
-    const undelivered = roomRun && replyDelivery.replyUndelivered;
+    const suspectedUndelivered = roomRun && replyDelivery.replyUndelivered;
+    const suspectedNotSent = roomRun && replyDelivery.replyNotSent;
+    let confirmedReplied = false;
+    let replyCheckFailed = false;
+    if (suspectedUndelivered || suspectedNotSent) {
+      try {
+        confirmedReplied = await this.#state.hasLocalRunReplied(
+          runId,
+          this.#terminalRecoveryStop.signal,
+        );
+      } catch (error) {
+        replyCheckFailed = true;
+        this.#logger.log("warn", "local_run.reply_check_failed", {
+          runId,
+          error,
+        });
+      }
+    }
+    const undelivered = suspectedUndelivered && !confirmedReplied;
     if (replyDelivery.hasFailures) {
       this.#logger.log("warn", "local_run.teamhub_messages_failed", {
         runId,
@@ -1844,14 +1862,24 @@ export class RunLoop {
         failure: runFailure("reply_undelivered", this.#runtimeType),
       };
     }
-    if (roomRun && fallbackFailure === "response_too_large") {
-      return {
-        type: "failed",
-        error: "Agent reply exceeded the maximum Room message length",
-        failure: runFailure("response_too_large", this.#runtimeType),
-      };
+    if (suspectedNotSent && !confirmedReplied && !replyCheckFailed) {
+      const fallbackFailure = await this.#deliverFallbackReplyIfNeeded(
+        execution,
+        finalResponse,
+        replyDelivery,
+      );
+      if (execution.upstreamCanceled) {
+        return { type: "succeeded", finalResponse };
+      }
+      if (fallbackFailure === "response_too_large") {
+        return {
+          type: "failed",
+          error: "Agent reply exceeded the maximum Room message length",
+          failure: runFailure("response_too_large", this.#runtimeType),
+        };
+      }
     }
-    if (roomRun && replyDelivery.replyNotSent) {
+    if (suspectedNotSent && !confirmedReplied && replyDelivery.replyNotSent) {
       this.#logger.log("warn", "local_run.reply_not_sent", {
         runId,
         ...replyDelivery.counts(),
@@ -2117,7 +2145,12 @@ const classifiedRunFailure = (
             : error instanceof StreamingAgentRunLimitError
               ? "response_too_large"
               : "unclassified",
-        runtimeType,
+        // A Run that definitely never started did not reach the Runtime, so
+        // naming it would point the user at the wrong component.
+        error instanceof ProviderRunStartError &&
+          !(error instanceof ProviderRunAdmissionUnavailableError)
+          ? undefined
+          : runtimeType,
       );
 
 const runFailure = (

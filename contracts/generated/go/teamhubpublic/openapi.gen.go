@@ -2572,14 +2572,17 @@ func (e LocalRuntimeDiagnosticStatus) Valid() bool {
 
 // Defines values for LocalRuntimeType.
 const (
-	LocalRuntimeTypeClaude LocalRuntimeType = "claude"
-	LocalRuntimeTypeCodex  LocalRuntimeType = "codex"
-	LocalRuntimeTypePi     LocalRuntimeType = "pi"
+	LocalRuntimeTypeAntigravity LocalRuntimeType = "antigravity"
+	LocalRuntimeTypeClaude      LocalRuntimeType = "claude"
+	LocalRuntimeTypeCodex       LocalRuntimeType = "codex"
+	LocalRuntimeTypePi          LocalRuntimeType = "pi"
 )
 
 // Valid indicates whether the value is a known member of the LocalRuntimeType enum.
 func (e LocalRuntimeType) Valid() bool {
 	switch e {
+	case LocalRuntimeTypeAntigravity:
+		return true
 	case LocalRuntimeTypeClaude:
 		return true
 	case LocalRuntimeTypeCodex:
@@ -2845,7 +2848,7 @@ const (
 	ModelSourceErrorCodeAgentHasActiveRuns            ModelSourceErrorCode = "AGENT_HAS_ACTIVE_RUNS"
 	ModelSourceErrorCodeByokAuthFailed                ModelSourceErrorCode = "BYOK_AUTH_FAILED"
 	ModelSourceErrorCodeByokInvalidConfig             ModelSourceErrorCode = "BYOK_INVALID_CONFIG"
-	ModelSourceErrorCodeByokModelNotFound             ModelSourceErrorCode = "BYOK_MODEL_NOT_FOUND"
+	ModelSourceErrorCodeByokNotFound                  ModelSourceErrorCode = "BYOK_NOT_FOUND"
 	ModelSourceErrorCodeByokUnreachable               ModelSourceErrorCode = "BYOK_UNREACHABLE"
 	ModelSourceErrorCodeByokUpstreamRejected          ModelSourceErrorCode = "BYOK_UPSTREAM_REJECTED"
 	ModelSourceErrorCodeLocalComputerOffline          ModelSourceErrorCode = "LOCAL_COMPUTER_OFFLINE"
@@ -2868,7 +2871,7 @@ func (e ModelSourceErrorCode) Valid() bool {
 		return true
 	case ModelSourceErrorCodeByokInvalidConfig:
 		return true
-	case ModelSourceErrorCodeByokModelNotFound:
+	case ModelSourceErrorCodeByokNotFound:
 		return true
 	case ModelSourceErrorCodeByokUnreachable:
 		return true
@@ -4833,20 +4836,38 @@ type BrowserConnectionStatusState string
 // BrowserProfile A Chrome profile directory name inside the user's Chrome data directory.
 type BrowserProfile = string
 
-// ByokEndpointInput A BYOK endpoint address and key, enough to list its models. The API key is never persisted in TeamHub or Agent Service.
+// ByokEndpointInput A BYOK endpoint address and key, enough to list its models at base_url + path + /models with protocol's key header. The API key is never persisted in TeamHub or Agent Service.
 type ByokEndpointInput struct {
-	ApiKey        *string `json:"api_key,omitempty"`
-	BaseUrl       string  `json:"base_url"`
-	ReuseSavedKey *bool   `json:"reuse_saved_key,omitempty"`
+	ApiKey  *string `json:"api_key,omitempty"`
+	BaseUrl string  `json:"base_url"`
+
+	// Endpoint A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Endpoint ByokUrlPath `json:"endpoint"`
+
+	// Path A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Path ByokUrlPath `json:"path"`
+
+	// Protocol Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
+	Protocol      ByokProtocol `json:"protocol"`
+	ReuseSavedKey *bool        `json:"reuse_saved_key,omitempty"`
 }
 
-// ByokInput Upstream endpoint configuration supplied by the Computer owner. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
+// ByokInput Upstream endpoint configuration supplied by the Computer owner. Requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
 type ByokInput struct {
 	ApiKey        *string `json:"api_key,omitempty"`
 	BaseUrl       string  `json:"base_url"`
 	ContextWindow *int    `json:"context_window,omitempty"`
-	ModelId       string  `json:"model_id"`
-	ReuseSavedKey *bool   `json:"reuse_saved_key,omitempty"`
+
+	// Endpoint A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Endpoint ByokUrlPath `json:"endpoint"`
+	ModelId  string      `json:"model_id"`
+
+	// Path A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Path ByokUrlPath `json:"path"`
+
+	// Protocol Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
+	Protocol      ByokProtocol `json:"protocol"`
+	ReuseSavedKey *bool        `json:"reuse_saved_key,omitempty"`
 }
 
 // ByokModel A model a BYOK endpoint lists.
@@ -4860,46 +4881,54 @@ type ByokModel struct {
 
 // ByokModelList The models a BYOK endpoint lists, sorted by id.
 type ByokModelList struct {
-	// BaseUrl The address that listed them.
-	BaseUrl string      `json:"base_url"`
-	Models  []ByokModel `json:"models"`
+	Models []ByokModel `json:"models"`
+
+	// Url The address that listed them.
+	Url string `json:"url"`
 }
 
-// ByokProtocol Wire format the Computer found a BYOK upstream endpoint answers, trying the active Runtime's own format first.
+// ByokProtocol Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
 type ByokProtocol string
 
-// ByokSummary Redacted BYOK configuration metadata reported by the Computer.
+// ByokSummary Redacted BYOK configuration metadata reported by the Computer. path and endpoint are omitted when empty: a configured summary without them appends nothing there.
 type ByokSummary struct {
 	BaseUrl       *string `json:"base_url,omitempty"`
 	Configured    bool    `json:"configured"`
 	ContextWindow *int    `json:"context_window,omitempty"`
-	KeySaved      bool    `json:"key_saved"`
-	ModelId       *string `json:"model_id,omitempty"`
 
-	// Protocol Wire format the Computer found a BYOK upstream endpoint answers, trying the active Runtime's own format first.
+	// Endpoint A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Endpoint *ByokUrlPath `json:"endpoint,omitempty"`
+	KeySaved bool         `json:"key_saved"`
+	ModelId  *string      `json:"model_id,omitempty"`
+
+	// Path A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+	Path *ByokUrlPath `json:"path,omitempty"`
+
+	// Protocol Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
 	Protocol *ByokProtocol `json:"protocol,omitempty"`
 }
 
-// ByokTestRequest A BYOK endpoint to verify from the Computer for the Runtime that would serve it, which decides the order wire formats are tried.
+// ByokTestRequest A BYOK endpoint to verify with one request from the Computer.
 type ByokTestRequest struct {
-	// Byok Upstream endpoint configuration supplied by the Computer owner. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
+	// Byok Upstream endpoint configuration supplied by the Computer owner. Requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
 	Byok ByokInput `json:"byok"`
-
-	// Runtime Agent runtime harness driving turns on the Computer.
-	Runtime ModelSourceRuntime `json:"runtime"`
 }
 
-// ByokTestResult Outcome of probing an upstream BYOK endpoint from the Local Computer.
+// ByokTestResult Outcome of one request to an upstream BYOK endpoint from the Local Computer.
 type ByokTestResult struct {
-	// BaseUrl The address that answered, which can add or drop the /anthropic of a gateway that serves OpenAI under /v1 and Anthropic under /anthropic.
-	BaseUrl       string `json:"base_url"`
 	ContextWindow int    `json:"context_window"`
 	ModelId       string `json:"model_id"`
 	Ok            bool   `json:"ok"`
 
-	// Protocol Wire format the Computer found a BYOK upstream endpoint answers, trying the active Runtime's own format first.
+	// Protocol Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
 	Protocol ByokProtocol `json:"protocol"`
+
+	// Url The address the request went to.
+	Url string `json:"url"`
 }
+
+// ByokUrlPath A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path.
+type ByokUrlPath = string
 
 // CaptureSessionChangedPayload defines model for CaptureSessionChangedPayload.
 type CaptureSessionChangedPayload struct {
@@ -7319,7 +7348,7 @@ type MessageThreadSummaryUpdatedPayload struct {
 
 // ModelSourceError The common error body with error.code narrowed to ModelSourceErrorCode.
 type ModelSourceError struct {
-	// Code error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409). MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
+	// Code error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409); for BYOK_AUTH_FAILED, BYOK_NOT_FOUND, BYOK_UNREACHABLE and BYOK_UPSTREAM_REJECTED, message is the Computer's own and names the address it sent to and the endpoint's HTTP status. MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
 	Code    ModelSourceErrorCode `json:"code"`
 	Details *[]ErrorDetail       `json:"details,omitempty"`
 
@@ -7328,7 +7357,7 @@ type ModelSourceError struct {
 	RequestId string `json:"request_id"`
 }
 
-// ModelSourceErrorCode error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409). MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
+// ModelSourceErrorCode error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409); for BYOK_AUTH_FAILED, BYOK_NOT_FOUND, BYOK_UNREACHABLE and BYOK_UPSTREAM_REJECTED, message is the Computer's own and names the address it sent to and the endpoint's HTTP status. MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
 type ModelSourceErrorCode string
 
 // ModelSourceErrorResponse defines model for ModelSourceErrorResponse.
@@ -7345,7 +7374,7 @@ type ModelSourceRuntime string
 
 // ModelSourceStatus Active model source and redacted BYOK metadata on one Local Computer.
 type ModelSourceStatus struct {
-	// Byok Redacted BYOK configuration metadata reported by the Computer.
+	// Byok Redacted BYOK configuration metadata reported by the Computer. path and endpoint are omitted when empty: a configured summary without them appends nothing there.
 	Byok       ByokSummary `json:"byok"`
 	GatewayUrl *string     `json:"gateway_url,omitempty"`
 
@@ -7362,7 +7391,7 @@ type ModelSourceStatus struct {
 
 // ModelSourceSwitchRequest Owner request to switch a Computer between local models, native subscriptions, and BYOK on Bifrost. When active Runs exist on the Computer's affected Agents and force_terminate is false, TeamHub refuses with 409 AGENT_HAS_ACTIVE_RUNS; retrying with force_terminate true terminates those Runs and applies the switch.
 type ModelSourceSwitchRequest struct {
-	// Byok Upstream endpoint configuration supplied by the Computer owner. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
+	// Byok Upstream endpoint configuration supplied by the Computer owner. Requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file.
 	Byok *ByokInput `json:"byok,omitempty"`
 
 	// ForceTerminate True ends running work on the Computer's Agents; absent means false.

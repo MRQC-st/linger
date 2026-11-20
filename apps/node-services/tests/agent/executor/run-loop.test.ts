@@ -336,6 +336,7 @@ describe("RunLoop", () => {
       finalResponse = "I could not deliver the reply: TeamHub returned 404.",
       steered?: Message,
       setupState?: (state: ContextRuntimeState) => void,
+      hasLocalRunReplied?: ContextRuntimeStatePort["hasLocalRunReplied"],
     ) => {
       const harness = createHarness(
         undefined,
@@ -345,6 +346,9 @@ describe("RunLoop", () => {
         executionContextRef,
       );
       setupState?.(harness.state);
+      if (hasLocalRunReplied) {
+        Object.assign(harness.state, { hasLocalRunReplied });
+      }
       const run = new FakeRun(events);
       harness.provider.runs.push(run);
       const runId = enqueue(harness.state, input);
@@ -726,15 +730,182 @@ describe("RunLoop", () => {
     });
 
     it("keeps a Room Run succeeded without fallback when it answered a Human mention with a message", async () => {
+      const hasLocalRunReplied = vi.fn(async () => false);
       const { run, fallbackReplies } = await finishRun(
         messageWrite("send-1", "succeeded"),
         undefined,
         humanMention("mention"),
         "Private scratch.",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
       );
 
       expect(fallbackReplies).toEqual([]);
       expect(run?.terminal).toMatchObject({ type: "succeeded" });
+      expect(hasLocalRunReplied).not.toHaveBeenCalled();
+    });
+
+    it("keeps a Room Run succeeded without fallback when TeamHub confirms a reply that activity tracking missed", async () => {
+      const hasLocalRunReplied = vi.fn(async () => true);
+      const { log, run, fallbackReplies } = await finishRun(
+        [],
+        undefined,
+        humanMention("mention"),
+        "Sent via compound command.",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(fallbackReplies).toEqual([]);
+      expect(run?.terminal).toMatchObject({ type: "succeeded" });
+      expect(hasLocalRunReplied).toHaveBeenCalledExactlyOnceWith(
+        run?.runId,
+        expect.any(AbortSignal),
+      );
+      expect(log).not.toHaveBeenCalledWith(
+        "warn",
+        "local_run.reply_not_sent",
+        expect.anything(),
+      );
+    });
+
+    it("delivers fallback reply after TeamHub confirms no reply landed", async () => {
+      const hasLocalRunReplied = vi.fn(async () => false);
+      const { run, fallbackReplies } = await finishRun(
+        [],
+        undefined,
+        humanMention("mention"),
+        "Deliverable final text.",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(hasLocalRunReplied).toHaveBeenCalledOnce();
+      expect(run?.terminal).toMatchObject({ type: "succeeded" });
+      expect(fallbackReplies).toEqual([
+        expect.objectContaining({
+          runId: run?.runId,
+          text: "Deliverable final text.",
+        }),
+      ]);
+    });
+
+    it("fails a Room Run as reply_not_sent when TeamHub confirms no reply landed and no deliverable text exists", async () => {
+      const hasLocalRunReplied = vi.fn(async () => false);
+      const { log, run, fallbackReplies } = await finishRun(
+        [],
+        undefined,
+        humanMention("mention"),
+        "",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(fallbackReplies).toEqual([]);
+      expect(run).toMatchObject({
+        status: "failed",
+        terminal: {
+          type: "failed",
+          failure: { code: "reply_not_sent", runtime_type: "pi" },
+        },
+      });
+      expect(hasLocalRunReplied).toHaveBeenCalledOnce();
+      expect(log).toHaveBeenCalledWith(
+        "warn",
+        "local_run.reply_not_sent",
+        expect.objectContaining({ runId: run?.runId }),
+      );
+    });
+
+    it("falls back to reply_not_sent without fallback delivery when the TeamHub reply check fails", async () => {
+      const hasLocalRunReplied = vi.fn(async () => {
+        throw new Error("teamhub unreachable");
+      });
+      const { log, run, fallbackReplies } = await finishRun(
+        [],
+        undefined,
+        humanMention("mention"),
+        "Done.",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(fallbackReplies).toEqual([]);
+      expect(run).toMatchObject({
+        status: "failed",
+        terminal: {
+          type: "failed",
+          failure: { code: "reply_not_sent", runtime_type: "pi" },
+        },
+      });
+      expect(log).toHaveBeenCalledWith(
+        "warn",
+        "local_run.reply_check_failed",
+        expect.objectContaining({ runId: run?.runId }),
+      );
+      expect(log).toHaveBeenCalledWith(
+        "warn",
+        "local_run.reply_not_sent",
+        expect.objectContaining({ runId: run?.runId }),
+      );
+    });
+
+    it("keeps a Room Run succeeded when TeamHub confirms a reply despite a failed message activity", async () => {
+      const hasLocalRunReplied = vi.fn(async () => true);
+      const { log, run } = await finishRun(
+        messageWrite("send-1", "failed"),
+        undefined,
+        humanMention("mention"),
+        "",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(run?.terminal).toMatchObject({ type: "succeeded" });
+      expect(hasLocalRunReplied).toHaveBeenCalledOnce();
+      expect(log).toHaveBeenCalledWith(
+        "warn",
+        "local_run.teamhub_messages_failed",
+        expect.objectContaining({
+          runId: run?.runId,
+          failedMessageWrites: 1,
+          replyUndelivered: false,
+        }),
+      );
+    });
+
+    it("still fails as reply_undelivered when message writes failed and TeamHub reply check errors", async () => {
+      const hasLocalRunReplied = vi.fn(async () => {
+        throw new Error("teamhub unreachable");
+      });
+      const { log, run } = await finishRun(
+        messageWrite("send-1", "failed"),
+        undefined,
+        humanMention("mention"),
+        "",
+        undefined,
+        undefined,
+        hasLocalRunReplied,
+      );
+
+      expect(run).toMatchObject({
+        status: "failed",
+        terminal: {
+          type: "failed",
+          failure: { code: "reply_undelivered", runtime_type: "pi" },
+        },
+      });
+      expect(log).toHaveBeenCalledWith(
+        "warn",
+        "local_run.reply_check_failed",
+        expect.objectContaining({ runId: run?.runId }),
+      );
     });
 
     it.each([
@@ -2705,6 +2876,29 @@ describe("RunLoop", () => {
     );
     expect(harness.provider.starts).toHaveLength(2);
     expect(statusPublisher.opened).toHaveLength(1);
+    harness.state.close();
+  });
+
+  it("does not blame the Runtime for a Run the Agent Service could not start", async () => {
+    const harness = createHarness();
+    harness.provider.startErrors.push(
+      new ProviderRunStartError("definitely_not_started", "first failure"),
+      new ProviderRunStartError("definitely_not_started", "second failure"),
+    );
+    const runId = enqueue(harness.state, message("initial"));
+
+    harness.execution.start();
+    await vi.waitFor(() =>
+      expect(harness.state.getLocalRun(runId)?.status).toBe("failed"),
+    );
+    const terminal = harness.state.getLocalRun(runId)?.terminal;
+    expect(terminal).toMatchObject({
+      type: "failed",
+      failure: { code: "unclassified" },
+    });
+    expect(terminal?.type === "failed" && terminal.failure).not.toHaveProperty(
+      "runtime_type",
+    );
     harness.state.close();
   });
 

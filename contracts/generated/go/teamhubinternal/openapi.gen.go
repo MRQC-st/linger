@@ -436,14 +436,17 @@ func (e AgentRuntimeLocalComputerPlatform) Valid() bool {
 
 // Defines values for AgentRuntimeLocalComputerRuntimes.
 const (
-	AgentRuntimeLocalComputerRuntimesClaude AgentRuntimeLocalComputerRuntimes = "claude"
-	AgentRuntimeLocalComputerRuntimesCodex  AgentRuntimeLocalComputerRuntimes = "codex"
-	AgentRuntimeLocalComputerRuntimesPi     AgentRuntimeLocalComputerRuntimes = "pi"
+	AgentRuntimeLocalComputerRuntimesAntigravity AgentRuntimeLocalComputerRuntimes = "antigravity"
+	AgentRuntimeLocalComputerRuntimesClaude      AgentRuntimeLocalComputerRuntimes = "claude"
+	AgentRuntimeLocalComputerRuntimesCodex       AgentRuntimeLocalComputerRuntimes = "codex"
+	AgentRuntimeLocalComputerRuntimesPi          AgentRuntimeLocalComputerRuntimes = "pi"
 )
 
 // Valid indicates whether the value is a known member of the AgentRuntimeLocalComputerRuntimes enum.
 func (e AgentRuntimeLocalComputerRuntimes) Valid() bool {
 	switch e {
+	case AgentRuntimeLocalComputerRuntimesAntigravity:
+		return true
 	case AgentRuntimeLocalComputerRuntimesClaude:
 		return true
 	case AgentRuntimeLocalComputerRuntimesCodex:
@@ -679,14 +682,17 @@ func (e ConnectAgentRuntimeLocalComputerRequestPlatform) Valid() bool {
 
 // Defines values for ConnectAgentRuntimeLocalComputerRequestRuntimes.
 const (
-	ConnectAgentRuntimeLocalComputerRequestRuntimesClaude ConnectAgentRuntimeLocalComputerRequestRuntimes = "claude"
-	ConnectAgentRuntimeLocalComputerRequestRuntimesCodex  ConnectAgentRuntimeLocalComputerRequestRuntimes = "codex"
-	ConnectAgentRuntimeLocalComputerRequestRuntimesPi     ConnectAgentRuntimeLocalComputerRequestRuntimes = "pi"
+	ConnectAgentRuntimeLocalComputerRequestRuntimesAntigravity ConnectAgentRuntimeLocalComputerRequestRuntimes = "antigravity"
+	ConnectAgentRuntimeLocalComputerRequestRuntimesClaude      ConnectAgentRuntimeLocalComputerRequestRuntimes = "claude"
+	ConnectAgentRuntimeLocalComputerRequestRuntimesCodex       ConnectAgentRuntimeLocalComputerRequestRuntimes = "codex"
+	ConnectAgentRuntimeLocalComputerRequestRuntimesPi          ConnectAgentRuntimeLocalComputerRequestRuntimes = "pi"
 )
 
 // Valid indicates whether the value is a known member of the ConnectAgentRuntimeLocalComputerRequestRuntimes enum.
 func (e ConnectAgentRuntimeLocalComputerRequestRuntimes) Valid() bool {
 	switch e {
+	case ConnectAgentRuntimeLocalComputerRequestRuntimesAntigravity:
+		return true
 	case ConnectAgentRuntimeLocalComputerRequestRuntimesClaude:
 		return true
 	case ConnectAgentRuntimeLocalComputerRequestRuntimesCodex:
@@ -1129,14 +1135,17 @@ func (e LocalModelsUnavailableCode) Valid() bool {
 
 // Defines values for LocalRuntimeType.
 const (
-	LocalRuntimeTypeClaude LocalRuntimeType = "claude"
-	LocalRuntimeTypeCodex  LocalRuntimeType = "codex"
-	LocalRuntimeTypePi     LocalRuntimeType = "pi"
+	LocalRuntimeTypeAntigravity LocalRuntimeType = "antigravity"
+	LocalRuntimeTypeClaude      LocalRuntimeType = "claude"
+	LocalRuntimeTypeCodex       LocalRuntimeType = "codex"
+	LocalRuntimeTypePi          LocalRuntimeType = "pi"
 )
 
 // Valid indicates whether the value is a known member of the LocalRuntimeType enum.
 func (e LocalRuntimeType) Valid() bool {
 	switch e {
+	case LocalRuntimeTypeAntigravity:
+		return true
 	case LocalRuntimeTypeClaude:
 		return true
 	case LocalRuntimeTypeCodex:
@@ -1678,14 +1687,17 @@ func (e TaskWorkerTransitionRequestTransition) Valid() bool {
 
 // Defines values for TouchAgentRuntimeLocalComputerRequestRuntimes.
 const (
-	TouchAgentRuntimeLocalComputerRequestRuntimesClaude TouchAgentRuntimeLocalComputerRequestRuntimes = "claude"
-	TouchAgentRuntimeLocalComputerRequestRuntimesCodex  TouchAgentRuntimeLocalComputerRequestRuntimes = "codex"
-	TouchAgentRuntimeLocalComputerRequestRuntimesPi     TouchAgentRuntimeLocalComputerRequestRuntimes = "pi"
+	TouchAgentRuntimeLocalComputerRequestRuntimesAntigravity TouchAgentRuntimeLocalComputerRequestRuntimes = "antigravity"
+	TouchAgentRuntimeLocalComputerRequestRuntimesClaude      TouchAgentRuntimeLocalComputerRequestRuntimes = "claude"
+	TouchAgentRuntimeLocalComputerRequestRuntimesCodex       TouchAgentRuntimeLocalComputerRequestRuntimes = "codex"
+	TouchAgentRuntimeLocalComputerRequestRuntimesPi          TouchAgentRuntimeLocalComputerRequestRuntimes = "pi"
 )
 
 // Valid indicates whether the value is a known member of the TouchAgentRuntimeLocalComputerRequestRuntimes enum.
 func (e TouchAgentRuntimeLocalComputerRequestRuntimes) Valid() bool {
 	switch e {
+	case TouchAgentRuntimeLocalComputerRequestRuntimesAntigravity:
+		return true
 	case TouchAgentRuntimeLocalComputerRequestRuntimesClaude:
 		return true
 	case TouchAgentRuntimeLocalComputerRequestRuntimesCodex:
@@ -2201,6 +2213,12 @@ type AgentLocalRun struct {
 
 // AgentLocalRunStatus defines model for AgentLocalRun.Status.
 type AgentLocalRunStatus string
+
+// AgentLocalRunReplyStatus defines model for AgentLocalRunReplyStatus.
+type AgentLocalRunReplyStatus struct {
+	// Replied Whether TeamHub persisted a visible reply from this Local Run: a conversation Message or decision card attributed to the Run, a queued presentation sequence attributed to the Run, or an unattributed conversation Message, presentation sequence, or emoji Reaction written by the Context's Agent in the Room or its Threads since the Run started.
+	Replied bool `json:"replied"`
+}
 
 // AgentMemoryDocument defines model for AgentMemoryDocument.
 type AgentMemoryDocument struct {
@@ -4619,6 +4637,12 @@ type GetAgentRuntimeLocalComputerParams struct {
 
 // GetAgentLocalRunParams defines parameters for GetAgentLocalRun.
 type GetAgentLocalRunParams struct {
+	ContextKey ContextKey `form:"context_key" json:"context_key"`
+	LocalRunId LocalRunId `form:"local_run_id" json:"local_run_id"`
+}
+
+// GetAgentLocalRunReplyStatusParams defines parameters for GetAgentLocalRunReplyStatus.
+type GetAgentLocalRunReplyStatusParams struct {
 	ContextKey ContextKey `form:"context_key" json:"context_key"`
 	LocalRunId LocalRunId `form:"local_run_id" json:"local_run_id"`
 }

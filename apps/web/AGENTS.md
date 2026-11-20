@@ -30,8 +30,12 @@ build:assets` to check the initial JS budget.
   Local model; the page never holds a saved API key (reusing a saved key only
   for the saved endpoint's origin, clearing entered keys after saving, offering
   manual model ID entry even when endpoints list models, and disabling BYOK
-  edits while offline), and a switch refused with `AGENT_HAS_ACTIVE_RUNS`
-  retries with `force_terminate` only after the owner confirms. The Local model
+  edits while offline). BYOK addresses requests as base URL + path + endpoint
+  and sends the format the address's ending names (else the Runtime's own);
+  it lists models only on request and shows a Test result as a floating
+  message, with the Computer's own message for endpoint refusals. A switch
+  refused with `AGENT_HAS_ACTIVE_RUNS` retries with `force_terminate` only
+  after the owner confirms. The Local model
   tab is one Computer's model library as TeamHub last stored it. The Computer
   decides fit, availability, placement, the recommendation and memory; the page
   only orders and labels them, picks the Make room default (including
@@ -94,8 +98,13 @@ build:assets` to check the initial JS budget.
   earlier one is saving. Both in-page voice windows retain a visible, draggable
   title bar: dark in browsers, the window's own surface colour in the desktop
   app. Picture-in-picture keeps the browser title bar. The desktop app cannot
-  open picture-in-picture, so there voice windows stay in the page, offer no
-  float button, and on macOS stay out of the window drag strip.
+  open Document Picture-in-Picture; when its preload offers
+  `lingerDesktop.voiceWindow`, `voice-pip.ts` opens the floating window with
+  `window.open("")` instead (the desktop main process allows only that call),
+  renders the same voice UI into it, and shows a Show Linger window button that
+  brings the main window forward while the call keeps running. A desktop app
+  without `voiceWindow` keeps the voice windows in the page, with no float
+  button, and on macOS out of the window drag strip.
 - The compact primary rail reveals labels on hover and keyboard focus without
   moving link hit areas or neighbouring links. A stationary pointer at an edge
   must not trigger repeated hover enter/leave; sidebar expansion and Chat list

@@ -32,7 +32,7 @@ export type PositiveInteger = number;
 /**
  * An optional Runner behavior the Agent Service accepts. An older service rejects its frames as a protocol violation.
  */
-export type ServiceFeature = "local_models";
+export type ServiceFeature = "local_models" | "byok_endpoint";
 export type JsonValue =
   | null
   | boolean
@@ -124,6 +124,11 @@ export type CapabilityModelSource = LocalSkillCommandIdentity & {
   local_model_id?: LocalModelId;
   byok?: ByokConfigInput;
 };
+/**
+ * A path appended to a BYOK base URL: empty, or whole segments each led by one slash.
+ */
+export type ByokUrlPath = string;
+export type ByokProtocol = "openai-chat" | "openai-responses" | "anthropic";
 export type OperationPrepare = OperationIdentity & {
   type: "prepare";
   command_id: Id;
@@ -154,7 +159,7 @@ export type OperationIdentity = OperationScope & {
   generation: PositiveInteger;
   execution_lease_id: Id;
   workspace_grant_id: Id;
-  runtime_type: "codex" | "claude" | "pi";
+  runtime_type: "codex" | "claude" | "pi" | "antigravity";
 };
 export type OperationStart = OperationScope & {
   type: "operation.start";
@@ -174,7 +179,7 @@ export type OperationStart = OperationScope & {
   generation: PositiveInteger;
   execution_lease_id: Id;
   workspace_grant_id: Id;
-  runtime_type: "codex" | "claude" | "pi";
+  runtime_type: "codex" | "claude" | "pi" | "antigravity";
   host_access?: "trusted";
   request: RuntimeOperationRequest;
 };
@@ -234,12 +239,18 @@ export type DaemonToAgentEnvelope =
   | ComputerToolResult;
 /**
  * @minItems 1
- * @maxItems 3
+ * @maxItems 4
  */
 export type RuntimeDiagnostics =
   | [RuntimeDiagnostic]
   | [RuntimeDiagnostic, RuntimeDiagnostic]
-  | [RuntimeDiagnostic, RuntimeDiagnostic, RuntimeDiagnostic];
+  | [RuntimeDiagnostic, RuntimeDiagnostic, RuntimeDiagnostic]
+  | [
+      RuntimeDiagnostic,
+      RuntimeDiagnostic,
+      RuntimeDiagnostic,
+      RuntimeDiagnostic,
+    ];
 /**
  * @maxItems 100
  */
@@ -299,7 +310,7 @@ export type ActiveOperation = OperationScope & {
   generation: PositiveInteger;
   execution_lease_id: Id;
   workspace_grant_id: Id;
-  runtime_type: "codex" | "claude" | "pi";
+  runtime_type: "codex" | "claude" | "pi" | "antigravity";
   kind: "run.start";
   last_emitted_seq: NonNegativeInteger;
   last_acked_seq: NonNegativeInteger;
@@ -854,7 +865,7 @@ export interface RuntimeRegistration {
 export interface RuntimeRegistrationObservation {
   tenant_id: Id;
   owner_actor_id: Id;
-  provider_type: "codex" | "claude" | "pi";
+  provider_type: "codex" | "claude" | "pi" | "antigravity";
   status: "online" | "offline" | "unavailable";
   revision: PositiveInteger;
   capabilities: Id[];
@@ -874,7 +885,7 @@ export interface AgentRunnerWireIdentity {
   runner_revision: PositiveInteger;
 }
 export interface RuntimeConfig {
-  type: "codex" | "claude" | "pi";
+  type: "codex" | "claude" | "pi" | "antigravity";
   model?: string;
   reasoning_effort?:
     | "none"
@@ -928,10 +939,13 @@ export interface LocalSkillCommandIdentity {
   expires_at: Timestamp;
 }
 /**
- * A BYOK endpoint; model_id is required except to list the endpoint's models.
+ * A BYOK endpoint: requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. model_id is required except to list the endpoint's models.
  */
 export interface ByokConfigInput {
   base_url: string;
+  path: ByokUrlPath;
+  endpoint: ByokUrlPath;
+  protocol: ByokProtocol;
   api_key?: string;
   model_id?: string;
   context_window?: number;
@@ -1149,7 +1163,7 @@ export interface RunnerHello {
   /**
    * @minItems 0
    */
-  runtimes: ("codex" | "claude" | "pi")[];
+  runtimes: ("codex" | "claude" | "pi" | "antigravity")[];
   runtime_diagnostics: RuntimeDiagnostics;
   capabilities: RunnerCapability[];
   workspace_grants: WorkspaceGrant[];
@@ -1157,14 +1171,14 @@ export interface RunnerHello {
   active_operations: ActiveOperation[];
 }
 export interface RuntimeDiagnostic {
-  type: "codex" | "claude" | "pi";
+  type: "codex" | "claude" | "pi" | "antigravity";
   status:
     | "not_installed"
     | "authentication_required"
     | "ready"
     | "incompatible"
     | "error";
-  protocol: "app-server" | "stream-json" | "rpc";
+  protocol: "app-server" | "stream-json" | "rpc" | "acp";
   checked_at: Timestamp;
   version?: string;
   /**
@@ -1902,23 +1916,28 @@ export interface ModelSourceStatus {
   gateway_url?: string;
   byok: ByokSummary;
 }
+/**
+ * path and endpoint are sent only to an Agent Service that declares byok_endpoint, and are omitted when empty: a configured summary without them appends nothing there.
+ */
 export interface ByokSummary {
   configured: boolean;
-  protocol?: "openai-chat" | "openai-responses" | "anthropic";
+  protocol?: ByokProtocol;
   base_url?: string;
+  path?: ByokUrlPath;
+  endpoint?: ByokUrlPath;
   model_id?: string;
   context_window?: number;
   key_saved: boolean;
 }
 export interface ByokTestResult {
   ok: boolean;
-  protocol: "openai-chat" | "openai-responses" | "anthropic";
-  base_url: string;
+  protocol: ByokProtocol;
+  url: string;
   model_id: string;
   context_window: number;
 }
 export interface ByokModelList {
-  base_url: string;
+  url: string;
   /**
    * @maxItems 1000
    */
@@ -2033,7 +2052,7 @@ export interface RuntimeExecutionFailure {
     | "model_service_error"
     | "timeout"
     | "execution_failed";
-  runtime_type: "codex" | "claude" | "pi";
+  runtime_type: "codex" | "claude" | "pi" | "antigravity";
   runtime_version?: string;
 }
 export interface RuntimeFailureDiagnostics {

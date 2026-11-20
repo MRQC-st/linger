@@ -4262,7 +4262,7 @@ export interface components {
       | "max"
       | "ultra";
     /** @enum {string} */
-    LocalRuntimeType: "codex" | "claude" | "pi";
+    LocalRuntimeType: "codex" | "claude" | "pi" | "antigravity";
     /** @description Agents run on one of the Sponsor's Local Computers. Placement requires computer_id, runtime_type, and workspace_grant_id; TeamHub validates that invariant before persistence. */
     AgentRuntimePlacement: {
       /** @enum {string} */
@@ -4869,15 +4869,19 @@ export interface components {
      */
     ModelSourceRuntime: "claude" | "codex" | "pi";
     /**
-     * @description Wire format the Computer found a BYOK upstream endpoint answers, trying the active Runtime's own format first.
+     * @description Wire format of a BYOK upstream endpoint. The owner's client derives it from the end of the request address, else from the Runtime's own format; the Computer does not probe for it.
      * @enum {string}
      */
     ByokProtocol: "openai-chat" | "openai-responses" | "anthropic";
-    /** @description Redacted BYOK configuration metadata reported by the Computer. */
+    /** @description A path appended to a BYOK base URL: empty, or whole segments each led by one slash, so it can only extend the base URL's path. */
+    ByokUrlPath: string;
+    /** @description Redacted BYOK configuration metadata reported by the Computer. path and endpoint are omitted when empty: a configured summary without them appends nothing there. */
     ByokSummary: {
       configured: boolean;
       protocol?: components["schemas"]["ByokProtocol"];
       base_url?: string;
+      path?: components["schemas"]["ByokUrlPath"];
+      endpoint?: components["schemas"]["ByokUrlPath"];
       model_id?: string;
       context_window?: number;
       key_saved: boolean;
@@ -4902,7 +4906,7 @@ export interface components {
       terminated_run_count?: number;
     };
     /**
-     * @description error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409). MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
+     * @description error.code of a refused model-source request (403, 409, 502, 503, 504); 400, 401, and 404 use the common codes. LOCAL_COMPUTER_OFFLINE: the Computer is not connected. MODEL_SOURCE_FORBIDDEN: the viewer is not the Computer owner. MODEL_SOURCE_UNAVAILABLE: the Computer has no localmodels tool or cannot switch model sources. AGENT_HAS_ACTIVE_RUNS: Agents on the Computer have running work and force_terminate was false; details carries one entry per such Agent, with field "agent" and the Agent's display name as reason. RUNTIME_NOT_ENABLED, LOCAL_MODEL_NO_ROOM, LOCAL_MODEL_UNKNOWN, and the BYOK_ codes are the Computer's refusals (409); for BYOK_AUTH_FAILED, BYOK_NOT_FOUND, BYOK_UNREACHABLE and BYOK_UPSTREAM_REJECTED, message is the Computer's own and names the address it sent to and the endpoint's HTTP status. MODEL_SOURCE_FAILED: the Computer failed with an error that has no code of its own here (502). MODEL_SOURCE_SERVICE_UNAVAILABLE: Agent Service could not be reached (503). MODEL_SOURCE_UNCONFIRMED: the Computer had not answered by the deadline; it may still switch (504).
      * @enum {string}
      */
     ModelSourceErrorCode:
@@ -4915,7 +4919,7 @@ export interface components {
       | "LOCAL_MODEL_UNKNOWN"
       | "BYOK_INVALID_CONFIG"
       | "BYOK_AUTH_FAILED"
-      | "BYOK_MODEL_NOT_FOUND"
+      | "BYOK_NOT_FOUND"
       | "BYOK_UNREACHABLE"
       | "BYOK_UPSTREAM_REJECTED"
       | "MODEL_SOURCE_FAILED"
@@ -4932,9 +4936,12 @@ export interface components {
     ModelSourceErrorResponse: {
       error: components["schemas"]["ModelSourceError"];
     };
-    /** @description Upstream endpoint configuration supplied by the Computer owner. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file. */
+    /** @description Upstream endpoint configuration supplied by the Computer owner. Requests go to base_url + path + endpoint in protocol, and models are listed at base_url + path + /models. The API key is never persisted in TeamHub or Agent Service; only the Local Computer stores it in a private 0600 file. */
     ByokInput: {
       base_url: string;
+      path: components["schemas"]["ByokUrlPath"];
+      endpoint: components["schemas"]["ByokUrlPath"];
+      protocol: components["schemas"]["ByokProtocol"];
       api_key?: string;
       model_id: string;
       context_window?: number;
@@ -4949,9 +4956,12 @@ export interface components {
       /** @description True ends running work on the Computer's Agents; absent means false. */
       force_terminate?: boolean;
     };
-    /** @description A BYOK endpoint address and key, enough to list its models. The API key is never persisted in TeamHub or Agent Service. */
+    /** @description A BYOK endpoint address and key, enough to list its models at base_url + path + /models with protocol's key header. The API key is never persisted in TeamHub or Agent Service. */
     ByokEndpointInput: {
       base_url: string;
+      path: components["schemas"]["ByokUrlPath"];
+      endpoint: components["schemas"]["ByokUrlPath"];
+      protocol: components["schemas"]["ByokProtocol"];
       api_key?: string;
       reuse_saved_key?: boolean;
     };
@@ -4965,20 +4975,19 @@ export interface components {
     /** @description The models a BYOK endpoint lists, sorted by id. */
     ByokModelList: {
       /** @description The address that listed them. */
-      base_url: string;
+      url: string;
       models: components["schemas"]["ByokModel"][];
     };
-    /** @description A BYOK endpoint to verify from the Computer for the Runtime that would serve it, which decides the order wire formats are tried. */
+    /** @description A BYOK endpoint to verify with one request from the Computer. */
     ByokTestRequest: {
-      runtime: components["schemas"]["ModelSourceRuntime"];
       byok: components["schemas"]["ByokInput"];
     };
-    /** @description Outcome of probing an upstream BYOK endpoint from the Local Computer. */
+    /** @description Outcome of one request to an upstream BYOK endpoint from the Local Computer. */
     ByokTestResult: {
       ok: boolean;
       protocol: components["schemas"]["ByokProtocol"];
-      /** @description The address that answered, which can add or drop the /anthropic of a gateway that serves OpenAI under /v1 and Anthropic under /anthropic. */
-      base_url: string;
+      /** @description The address the request went to. */
+      url: string;
       model_id: string;
       context_window: number;
     };
