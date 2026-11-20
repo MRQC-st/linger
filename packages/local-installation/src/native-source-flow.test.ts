@@ -297,7 +297,7 @@ test("choosing local models makes them the model source", async () => {
     path.resolve(f.home),
     "local",
     "pi",
-    expect.any(AbortSignal),
+    { signal: expect.any(AbortSignal), onEvent: expect.any(Function) },
   );
 });
 
@@ -464,7 +464,7 @@ test.each(["byok", "subscription"] as const)(
       path.resolve(f.home),
       "local",
       "pi",
-      expect.any(AbortSignal),
+      { signal: expect.any(AbortSignal), onEvent: expect.any(Function) },
     );
   },
 );
@@ -547,7 +547,7 @@ test("choosing a subscription again replaces a saved BYOK source", async () => {
     path.resolve(f.home),
     "subscription",
     "codex",
-    expect.any(AbortSignal),
+    { signal: expect.any(AbortSignal), onEvent: expect.any(Function) },
   );
   expect(restoreByokSource).not.toHaveBeenCalled();
 });
@@ -562,7 +562,7 @@ test("a restart keeps a saved subscription source as before", async () => {
     expect.any(String),
     "subscription",
     "codex",
-    expect.any(AbortSignal),
+    { signal: expect.any(AbortSignal), onEvent: expect.any(Function) },
   );
   expect(restoreByokSource).not.toHaveBeenCalled();
   expect(prepareModelGateway).toHaveBeenCalledWith(

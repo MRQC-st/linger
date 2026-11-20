@@ -272,8 +272,10 @@ export function isInProcessDocumentSource(
   >,
 ): boolean {
   const kind = resolveDocumentSourceKind(input);
-  // Source-aware JSON revival visits every value and can block shared roles.
-  return kind !== "json" && TEXT_DOCUMENT_SOURCE_KINDS.has(kind);
+  // Structured parsing can block shared roles even when the source is text.
+  return (
+    kind !== "json" && kind !== "html" && TEXT_DOCUMENT_SOURCE_KINDS.has(kind)
+  );
 }
 
 export function codeFenceLanguage(filename: string | undefined): string {

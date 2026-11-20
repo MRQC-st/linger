@@ -11,7 +11,7 @@ import {
   stripGzipExtension,
 } from "./document-archive-extract.js";
 import {
-  decodeXmlEntities,
+  escapeMarkdownTableCell,
   extractDocText,
   extractOfficeMarkdown,
   extractSpreadsheetMarkdown,
@@ -89,7 +89,8 @@ export async function normalizeDocumentContent(
       );
       break;
     case "html":
-      markdown = htmlToMarkdown(decodeUtf8Text(input.source));
+      decodeUtf8Text(input.source);
+      markdown = await extractOfficeMarkdown(input.source, "html");
       break;
     case "csv":
       markdown = delimitedToMarkdown(decodeUtf8Text(input.source), ",");
@@ -199,39 +200,6 @@ function decodeUtf8Text(source: Uint8Array): string {
   return decoded;
 }
 
-function htmlToMarkdown(html: string): string {
-  let value = html
-    .replace(/<script\b[\s\S]*?<\/script>/giu, "")
-    .replace(/<style\b[\s\S]*?<\/style>/giu, "")
-    .replace(/<noscript\b[\s\S]*?<\/noscript>/giu, "")
-    .replace(/<!--[\s\S]*?-->/gu, "")
-    .replace(/<br\s*\/?>/giu, "\n");
-  value = value.replace(
-    /<h([1-6])\b[^>]*>([\s\S]*?)<\/h\1>/giu,
-    (_match, level: string, inner: string) =>
-      `\n${"#".repeat(Number(level))} ${stripHtml(inner)}\n`,
-  );
-  value = value.replace(
-    /<li\b[^>]*>([\s\S]*?)<\/li>/giu,
-    (_match, inner: string) => `\n- ${stripHtml(inner)}`,
-  );
-  value = value.replace(
-    /<p\b[^>]*>([\s\S]*?)<\/p>/giu,
-    (_match, inner: string) => `\n\n${stripHtml(inner)}\n`,
-  );
-  return decodeXmlEntities(stripHtml(value))
-    .replace(/[ \t]+\n/gu, "\n")
-    .replace(/\n{3,}/gu, "\n\n")
-    .trim();
-}
-
-function stripHtml(value: string): string {
-  return value
-    .replace(/<[^>]+>/gu, " ")
-    .replace(/[ \t]{2,}/gu, " ")
-    .trim();
-}
-
 function delimitedToMarkdown(text: string, delimiter: string): string {
   const rows = parseDelimitedRows(text, delimiter);
   if (rows.length === 0) {
@@ -240,7 +208,7 @@ function delimitedToMarkdown(text: string, delimiter: string): string {
   const width = rows.reduce((max, row) => Math.max(max, row.length), 0);
   const padded = rows.map((row) =>
     Array.from({ length: width }, (_, index) =>
-      (row[index] ?? "").replaceAll("\n", " ").replaceAll("|", "\\|"),
+      escapeMarkdownTableCell(row[index] ?? ""),
     ),
   );
   const header = padded[0] ?? [];

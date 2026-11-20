@@ -144,8 +144,11 @@ Gateway and runs Agents. The daemon exits with the app.
   [Packaging Details](../../docs/desktop-release.md#packaging-details) for
   where the minimum comes from.
   Quick Install installs the `recommendation` of the localmodels setup
-  report (`installer.js --inspect`, run once as the setup window opens):
-  `local-models` is the planned model served by Pi, shown with the model,
+  report (`installer.js --inspect`, run for the selected install location
+  as the setup window opens and again when that location changes, including
+  after a failed install). Checks keep their tool cache in the default home,
+  leave alternative locations untouched, and never migrate installations.
+  In the report, `local-models` is the planned model served by Pi, shown with the model,
   GPU, memory and download (the card's memory is the whole stack's, so
   "with its services"); otherwise the named runtime, with why there is no
   local model. The page words each reason by its code and the counts it
@@ -237,7 +240,9 @@ Gateway and runs Agents. The daemon exits with the app.
   the `daemonId` the active enrollment named, and at start an enrollment that
   named none or another one is renewed once the server lists the capability,
   so a computer an earlier Set Up Again paired anew gets back the Computer
-  that holds its Daemon Identity, with its Agents.
+  that holds its Daemon Identity, with its Agents. TeamHub removes the Computer
+  the renewal named when it never bound a Daemon Identity and has no Agents
+  (the orphan that earlier Set Up Again left), in the same transaction.
   Before installing or resuming it moves the
   `COMPOSIO_API_KEY`, `SONIOX_API_KEY`, `XAI_API_KEY` and `TZ` of an unpacked
   source package's `.env` into `<home>/instances/desktop/user.env` once and
@@ -316,6 +321,20 @@ Gateway and runs Agents. The daemon exits with the app.
   redacted `error` bounded to 500 chars with query/hash stripped). A resume
   whose saved BYOK gateway did not come back still succeeds and logs
   `local_server.byok_gateway_unavailable` (`code`, `message`).
+- `src/main/voice-window.ts`: the floating voice window. Electron cannot open
+  Document Picture-in-Picture windows, so the SPA opens a small native window
+  with `window.open("")` under the target `linger-voice-window-<n>`
+  (`voiceWindowRequest` in `navigation.ts` allows only that, from the server's
+  page; every other `window.open` is still denied) and renders its Voice Mode
+  or Recording window into it, so the call and its state stay in the main
+  page. The window is always on top (on every macOS Space), has no
+  parent so it stays up when the main window is minimized or closed to the
+  tray, and closes with the page (reload, crash, main window closed). While it
+  is open the page is not background-throttled. Only a window the main page
+  itself opened is kept; one from a frame in it is destroyed. Its native close button ends
+  Voice Mode; `lingerDesktop.voiceWindow.showMainWindow()` (its presence is
+  how the SPA knows the app supports this) brings the main window forward and
+  keeps the call. An app without `voiceWindow` keeps the in-page windows.
 - `src/shell/*.html`: app-owned pages (title bar, offline/setup page). They
   have no network access and talk to the main process via `src/preload/shell.ts`.
 - `src/preload/index.ts`: the only SPA API, `window.lingerDesktop`. Its

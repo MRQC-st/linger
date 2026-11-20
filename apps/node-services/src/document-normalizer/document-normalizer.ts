@@ -3,7 +3,7 @@ import { Worker } from "node:worker_threads";
 import { serviceModule } from "../paths.js";
 
 export const DOCUMENT_NORMALIZER_NAME = "llm-wiki-document-markdown";
-export const DOCUMENT_NORMALIZER_VERSION = "2";
+export const DOCUMENT_NORMALIZER_VERSION = "3";
 export const MAX_DOCUMENT_PAGES = 100;
 export const MAX_DOCUMENT_SOURCE_BYTES = 50 * 1024 * 1024;
 export const MAX_DOCUMENT_MARKDOWN_BYTES = 32 * 1024 * 1024;

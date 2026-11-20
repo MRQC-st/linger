@@ -569,12 +569,10 @@ async function runNativeSource(
                 (options.setupChoice === "local-models" ||
                   options.localModelsApproval)
               )
-                runtimeOutcome = await applyNativeSource(
-                  home,
-                  "local",
-                  "pi",
+                runtimeOutcome = await applyNativeSource(home, "local", "pi", {
                   signal,
-                );
+                  onEvent: emit,
+                });
             }
           } else {
             runtimeOutcome = await prepareRuntime(choice, {
@@ -594,12 +592,10 @@ async function runNativeSource(
                   ?.code === "RUNTIME_AUTH_REQUIRED")
             )
               runtimeOutcome =
-                (await applyNativeSource(
-                  home,
-                  "subscription",
-                  choice,
+                (await applyNativeSource(home, "subscription", choice, {
                   signal,
-                )) ?? runtimeOutcome;
+                  onEvent: emit,
+                })) ?? runtimeOutcome;
           }
           if (
             runtimeOutcome &&
@@ -957,6 +953,8 @@ async function runNativeSource(
             prepareNativeDatabase({
               instance: current,
               postgresBin: tools.postgresBin,
+              postgresConfigurationExecutable:
+                tools.postgresConfigurationExecutable,
               env,
               signal,
               onOutput: (chunk) => output.write(chunk),
