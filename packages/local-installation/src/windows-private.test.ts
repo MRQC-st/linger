@@ -83,6 +83,12 @@ it("ignores inherit-only ACEs only for effective ancestor permissions", () => {
   );
   expect(target).not.toContain("PropagationFlags");
   expect(target).toContain("SHARED_ACCESS");
+  expect(WINDOWS_PRIVATE_SCRIPT).toContain(
+    "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')",
+  );
+  expect(WINDOWS_PRIVATE_WORKER_SCRIPT).toContain(
+    "$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')",
+  );
   expect(WINDOWS_PRIVATE_WORKER_SCRIPT).toContain("ReparsePoint");
   expect(WINDOWS_PRIVATE_WORKER_SCRIPT).toContain("SHARED_ACCESS");
 });
@@ -205,4 +211,37 @@ it("closes an idle persistent worker after the idle period", async () => {
   });
   await new Promise((resolve) => setTimeout(resolve, 80));
   expect(workers[0]!.wasEnded()).toBe(true);
+});
+
+it("respawns the persistent worker when PSModulePath changes", async () => {
+  const workers: Array<ReturnType<typeof fakeWorker>> = [];
+  const client = createWindowsPrivateClient({
+    idleMs: 10_000,
+    spawnWorker: () => {
+      const w = fakeWorker((_line, stdout) => {
+        stdout.write("__LINGER_ACL_OK__\n");
+      });
+      workers.push(w);
+      return w.child;
+    },
+  });
+  try {
+    vi.stubEnv("PSModulePath", "C:\\first");
+    expect(await client.execute(JSON.stringify({ path: "ok" }))).toEqual({
+      code: 0,
+      stdout: "",
+    });
+    expect(workers).toHaveLength(1);
+
+    vi.stubEnv("PSModulePath", "C:\\second");
+    expect(await client.execute(JSON.stringify({ path: "ok" }))).toEqual({
+      code: 0,
+      stdout: "",
+    });
+    expect(workers).toHaveLength(2);
+    await vi.waitFor(() => expect(workers[0]!.wasEnded()).toBe(true));
+  } finally {
+    vi.unstubAllEnvs();
+    client.close();
+  }
 });

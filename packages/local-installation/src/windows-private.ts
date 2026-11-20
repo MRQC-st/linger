@@ -51,6 +51,9 @@ const WINDOWS_PRIVATE_CHECK_BODY = String.raw`  $item = Get-Item -LiteralPath $r
 // contents, user-controlled PowerShell, or credentials appear in argv/output.
 export const WINDOWS_PRIVATE_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+# This fixed Windows PowerShell script uses only its own built-in modules.
+# A caller's PowerShell 7 modules can prevent Get-Acl from loading.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 try {
   $request = [Console]::In.ReadToEnd() | ConvertFrom-Json
@@ -73,6 +76,9 @@ const WORKER_ERR = "__LINGER_ACL_ERR__:";
 // a full .NET CLR startup (~1s) for every private directory and file.
 export const WINDOWS_PRIVATE_WORKER_SCRIPT = `
 $ErrorActionPreference = 'Stop'
+# This fixed Windows PowerShell script uses only its own built-in modules.
+# A caller's PowerShell 7 modules can prevent Get-Acl from loading.
+$env:PSModulePath = [IO.Path]::Combine($PSHOME, 'Modules')
 [Console]::InputEncoding = [Text.UTF8Encoding]::new($false)
 $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $system = 'S-1-5-18'; $admins = 'S-1-5-32-544'
@@ -166,6 +172,7 @@ export function createWindowsPrivateClient(
     lines: ReturnType<typeof createInterface>;
     pending?: (response: WorkerResponse) => void;
     onExit: () => void;
+    psModulePath: string | undefined;
   } | null = null;
   let idleTimer: NodeJS.Timeout | undefined;
   let tail: Promise<void> = Promise.resolve();
@@ -205,10 +212,12 @@ export function createWindowsPrivateClient(
   };
 
   const ensureWorker = () => {
-    if (active) {
+    const psModulePath = process.env.PSModulePath;
+    if (active && active.psModulePath === psModulePath) {
       setWorkerRef(active.child, true);
       return active;
     }
+    if (active) reset(false);
     const child = spawnWorker();
     child.stdin.on("error", () => {
       if (active?.child === child) reset(true);
@@ -226,6 +235,7 @@ export function createWindowsPrivateClient(
       lines,
       pending: undefined as ((response: WorkerResponse) => void) | undefined,
       onExit,
+      psModulePath,
     };
     lines.on("line", (raw) => {
       const line = raw.trim().replace(/^\ufeff/, "");
