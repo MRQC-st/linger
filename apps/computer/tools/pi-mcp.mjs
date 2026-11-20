@@ -43,6 +43,7 @@ const MANAGED_MCP_DESCRIPTIONS = {
 const BASE_TOOL_ORDER = [
   "read",
   "bash",
+  "powershell",
   "edit",
   "write",
   "grep",
@@ -50,6 +51,13 @@ const BASE_TOOL_ORDER = [
   "ls",
   "tool_search",
 ];
+
+const DEFAULT_COMPACTION_RETRY = {
+  enabled: true,
+  maxRetries: 3,
+  baseDelayMs: 2_000,
+  maxAgentDelayMs: 60_000,
+};
 
 const THINKING_LEVEL_RANK = {
   off: 0,
@@ -153,11 +161,17 @@ export function compactSkillDescription(description, maxChars) {
 function buildManagedPreamble(options) {
   const hidden = new Set(options.hiddenTools ?? []);
   const snippets = options.toolSnippets ?? {};
-  const visibleBase = (options.selectedTools ?? []).filter(
-    (name) =>
-      !hidden.has(name) && !name.startsWith("mcp__") && Boolean(snippets[name]),
-  );
-  const uniqueBase = [...new Set(visibleBase)].sort((a, b) => {
+  const toolGuidelines = options.toolGuidelines ?? {};
+  const promptGuidelines = Array.isArray(options.promptGuidelines)
+    ? options.promptGuidelines
+    : [];
+  const declaredBase = [
+    ...new Set(
+      (options.selectedTools ?? []).filter(
+        (name) => !hidden.has(name) && !name.startsWith("mcp__"),
+      ),
+    ),
+  ].sort((a, b) => {
     const ai = BASE_TOOL_ORDER.indexOf(a);
     const bi = BASE_TOOL_ORDER.indexOf(b);
     if (ai !== -1 && bi !== -1) return ai - bi;
@@ -165,23 +179,60 @@ function buildManagedPreamble(options) {
     if (bi !== -1) return 1;
     return a.localeCompare(b);
   });
-  const toolLines = uniqueBase.map((name) => `- ${name}: ${snippets[name]}`);
+  const toolLines = declaredBase
+    .filter((name) => Boolean(snippets[name]))
+    .map((name) => `- ${name}: ${snippets[name]}`);
   const lines = [
     "You are an autonomous assistant operating in a managed workspace with local tools.",
   ];
   if (toolLines.length > 0) {
     lines.push("", "Available tools:", ...toolLines);
   }
-  const hasToolSearch = visibleBase.includes("tool_search");
-  const rules = [
-    "Use read, grep, find, and ls to inspect files; use edit and write for file changes; use bash for shell commands and teamhub.",
-    ...(hasToolSearch
-      ? [
-          "Deferred MCP server tools are listed in <mcp_servers>; call tool_search to load matching tools before calling them.",
-        ]
-      : []),
-    "Be concise and show exact file paths when referencing files.",
-  ];
+  const rules = [];
+  const seenRules = new Set();
+  const addRule = (rule) => {
+    if (typeof rule !== "string") {
+      return;
+    }
+    const normalized = rule.trim();
+    if (!normalized || seenRules.has(normalized)) {
+      return;
+    }
+    seenRules.add(normalized);
+    rules.push(normalized);
+  };
+  const hasBash = declaredBase.includes("bash");
+  const hasPowerShell = declaredBase.includes("powershell");
+  const hasGrep = declaredBase.includes("grep");
+  const hasFind = declaredBase.includes("find");
+  const hasLs = declaredBase.includes("ls");
+  if ((hasBash || hasPowerShell) && !hasGrep && !hasFind && !hasLs) {
+    if (hasBash && hasPowerShell) {
+      addRule(
+        "Use bash or PowerShell for file operations like listing, searching, and finding files",
+      );
+    } else if (hasPowerShell) {
+      addRule(
+        "Use PowerShell for file operations like listing, searching, and finding files",
+      );
+    } else {
+      addRule("Use bash for file operations like ls, rg, find");
+    }
+  }
+  for (const name of declaredBase) {
+    for (const rule of toolGuidelines[name] ?? []) {
+      addRule(rule);
+    }
+  }
+  for (const rule of promptGuidelines) {
+    addRule(rule);
+  }
+  if (declaredBase.includes("tool_search")) {
+    addRule(
+      "Deferred MCP server tools are listed in <mcp_servers>; call tool_search to load matching tools before calling them.",
+    );
+  }
+  addRule("Be concise and show exact file paths when referencing files.");
   lines.push("", "Guidelines:", ...rules.map((rule) => `- ${rule}`));
   return lines.join("\n");
 }
@@ -320,6 +371,28 @@ export function resolveCompactionPolicy(
   };
 }
 
+function resolveCompactionRetrySettings(rawRetry) {
+  const retry = rawRetry && typeof rawRetry === "object" ? rawRetry : {};
+  return {
+    enabled:
+      typeof retry.enabled === "boolean"
+        ? retry.enabled
+        : DEFAULT_COMPACTION_RETRY.enabled,
+    maxRetries:
+      typeof retry.maxRetries === "number" && retry.maxRetries >= 0
+        ? retry.maxRetries
+        : DEFAULT_COMPACTION_RETRY.maxRetries,
+    baseDelayMs:
+      typeof retry.baseDelayMs === "number" && retry.baseDelayMs >= 0
+        ? retry.baseDelayMs
+        : DEFAULT_COMPACTION_RETRY.baseDelayMs,
+    maxAgentDelayMs:
+      typeof retry.maxAgentDelayMs === "number" && retry.maxAgentDelayMs >= 0
+        ? retry.maxAgentDelayMs
+        : DEFAULT_COMPACTION_RETRY.maxAgentDelayMs,
+  };
+}
+
 export async function handleSessionBeforeCompact(event, ctx, deps = {}) {
   const configuredContextWindow = deps.configuredContextWindow;
   const policy = resolveCompactionPolicy(
@@ -352,8 +425,10 @@ export async function handleSessionBeforeCompact(event, ctx, deps = {}) {
     ? { ...rePrepared, settings: scaledSettings }
     : { ...event.preparation, settings: scaledSettings };
 
+  let requestModel = ctx.model;
   let apiKey;
   let headers;
+  let env;
   if (typeof ctx.modelRegistry?.getApiKeyAndHeaders === "function") {
     const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
     if (auth && auth.ok === false) {
@@ -361,6 +436,10 @@ export async function handleSessionBeforeCompact(event, ctx, deps = {}) {
     }
     apiKey = auth?.apiKey;
     headers = auth?.headers;
+    env = auth?.env;
+    if (typeof auth?.baseUrl === "string" && auth.baseUrl) {
+      requestModel = { ...ctx.model, baseUrl: auth.baseUrl };
+    }
   }
 
   const streamSimple =
@@ -389,15 +468,18 @@ export async function handleSessionBeforeCompact(event, ctx, deps = {}) {
     ? `${event.customInstructions}\n\n${BOUNDED_COMPACTION_HINT}`
     : BOUNDED_COMPACTION_HINT;
 
+  const retry = resolveCompactionRetrySettings(deps.retrySettings);
   const result = await compactFn(
     preparation,
-    ctx.model,
+    requestModel,
     apiKey,
     headers,
     customInstructions,
     event.signal,
     policy.thinkingLevel,
     boundedStreamFn,
+    env,
+    retry,
   );
   return { compaction: result };
 }
@@ -482,6 +564,10 @@ export function createManagedPiExtension(options = {}) {
     pi.on("session_before_compact", (event, ctx) =>
       handleSessionBeforeCompact(event, ctx, {
         configuredContextWindow: getContextWindow(),
+        retrySettings:
+          typeof pi.getSettings === "function"
+            ? pi.getSettings()?.retry
+            : undefined,
       }),
     );
   };

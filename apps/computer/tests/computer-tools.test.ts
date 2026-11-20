@@ -322,6 +322,7 @@ describe("managed Pi prompt hygiene and prefix determinism", () => {
       skills: readonly Skill[],
       selectedTools: string[],
       servers: readonly McpServerListing[],
+      extraToolGuidelines: Record<string, string[]> = {},
     ): string => {
       const options = applyManagedPromptOptions(
         {
@@ -331,8 +332,14 @@ describe("managed Pi prompt hygiene and prefix determinism", () => {
             ...BASE_TOOL_SNIPPETS,
             mcp__browser__browser_navigate: "Navigate browser",
           },
-          toolGuidelines: {},
-          promptGuidelines: [],
+          toolGuidelines: {
+            edit: ["Use edit for precise changes."],
+            ...extraToolGuidelines,
+          },
+          promptGuidelines: [
+            "Always verify changes before replying.",
+            "Use edit for precise changes.",
+          ],
           appendSystemPrompt: "Stable room prompt",
           sections: {
             mcp_servers: renderServersSection(servers) ?? "",
@@ -371,8 +378,17 @@ describe("managed Pi prompt hygiene and prefix determinism", () => {
         "mcp__browser__browser_navigate",
       ],
       serverAfterConnect,
+      {
+        mcp__browser__browser_navigate: [
+          "Dynamic MCP guideline that must not mutate prefix.",
+        ],
+      },
     );
 
+    expect(turn1).toContain("- Use edit for precise changes.");
+    expect(turn1).toContain("- Always verify changes before replying.");
+    expect(turn1.match(/Use edit for precise changes\./g)?.length).toBe(1);
+    expect(turn1).not.toContain("Dynamic MCP guideline");
     expect(turn2).toBe(turn1);
     expect(turn3AfterMcpActivation).toBe(turn1);
   });
@@ -511,13 +527,16 @@ describe("managed Pi compaction reasoning and budget bounds", () => {
       reasoning: true,
     };
     const capturedCalls: Array<{
+      baseUrl?: string;
       maxTokens?: number;
       reasoning?: string;
+      env?: Record<string, string>;
     }> = [];
     let observedScaledSettings: {
       reserveTokens: number;
       keepRecentTokens: number;
     } | null = null;
+    let attempt = 0;
 
     const fakeBranch = [
       { id: "e1", type: "message", message: { role: "user", content: "old" } },
@@ -561,19 +580,48 @@ describe("managed Pi compaction reasoning and budget bounds", () => {
       thinkingLevel: "high",
       modelRegistry: {
         async getApiKeyAndHeaders() {
-          return { ok: true, apiKey: "local-key", headers: {} };
+          return {
+            ok: true,
+            apiKey: "local-key",
+            headers: {},
+            baseUrl: "http://127.0.0.1:18080/v1",
+            env: { CUSTOM_AUTH_ENV: "1" },
+          };
         },
         streamSimple(
-          _m: unknown,
+          m: { baseUrl?: string },
           _context: unknown,
-          options: { maxTokens?: number; reasoning?: string },
+          options: {
+            maxTokens?: number;
+            reasoning?: string;
+            env?: Record<string, string>;
+          },
         ) {
+          attempt += 1;
           capturedCalls.push({
+            baseUrl: m.baseUrl,
             maxTokens: options.maxTokens,
             reasoning: options.reasoning,
+            env: options.env,
           });
+          const shouldFailOnce = attempt === 1;
           return {
             async result() {
+              if (shouldFailOnce) {
+                return {
+                  role: "assistant",
+                  content: [],
+                  stopReason: "error",
+                  errorMessage: "terminated",
+                  usage: {
+                    input: 0,
+                    output: 0,
+                    cacheRead: 0,
+                    cacheWrite: 0,
+                    totalTokens: 0,
+                  },
+                };
+              }
               return {
                 role: "assistant",
                 content: [
@@ -596,6 +644,7 @@ describe("managed Pi compaction reasoning and budget bounds", () => {
 
     const outcome = await handleSessionBeforeCompact(event, ctx, {
       configuredContextWindow: 65_536,
+      retrySettings: { enabled: true, maxRetries: 2, baseDelayMs: 0 },
       prepareCompactionFn: (
         _entries: unknown,
         settings: { reserveTokens: number; keepRecentTokens: number },
@@ -614,7 +663,20 @@ describe("managed Pi compaction reasoning and budget bounds", () => {
       reserveTokens: 8_192,
       keepRecentTokens: 10_240,
     });
-    expect(capturedCalls).toEqual([{ maxTokens: 2_560, reasoning: "low" }]);
+    expect(capturedCalls).toEqual([
+      {
+        baseUrl: "http://127.0.0.1:18080/v1",
+        maxTokens: 2_560,
+        reasoning: "low",
+        env: { CUSTOM_AUTH_ENV: "1" },
+      },
+      {
+        baseUrl: "http://127.0.0.1:18080/v1",
+        maxTokens: 2_560,
+        reasoning: "low",
+        env: { CUSTOM_AUTH_ENV: "1" },
+      },
+    ]);
     expect(outcome?.compaction).toMatchObject({
       firstKeptEntryId: "e2",
       tokensBefore: 51_800,

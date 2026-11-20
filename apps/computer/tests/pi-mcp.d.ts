@@ -70,6 +70,12 @@ declare module "*pi-mcp.mjs" {
         },
       ) => unknown;
       readonly streamSimple?: (...args: unknown[]) => unknown;
+      readonly retrySettings?: {
+        readonly enabled?: boolean;
+        readonly maxRetries?: number;
+        readonly baseDelayMs?: number;
+        readonly maxAgentDelayMs?: number;
+      };
     },
   ): Promise<{ compaction: CompactionResult } | undefined>;
   export function loadManagedMcpConfig(configPath: string): LoadedMcpConfig;
