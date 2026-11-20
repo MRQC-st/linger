@@ -61,6 +61,10 @@
 
 ## Runtime And Safety
 
+- A Pi background model call uses one ephemeral RPC turn with no tools on
+  whatever model Pi's profile selects by default, local or remote; the Daemon
+  does not check which.
+
 - Default tests use deterministic providers and real fixture child processes;
   they never call a live model.
 - Process-test watchdogs are harness budgets for loaded developer machines, not

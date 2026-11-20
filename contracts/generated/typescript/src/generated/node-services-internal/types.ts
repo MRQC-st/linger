@@ -3141,7 +3141,7 @@ export interface operations {
           /** @description Stable normalizer implementation identity. */
           "X-Normalizer-Name": "llm-wiki-document-markdown";
           /** @description Behavior version; it changes whenever normalized output semantics change. */
-          "X-Normalizer-Version": "2";
+          "X-Normalizer-Version": "3";
           [name: string]: unknown;
         };
         content: {

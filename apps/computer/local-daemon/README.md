@@ -9,7 +9,7 @@ control through Linger's Runner Gateway.
 
 - `internal/daemon`: daemon lifecycle and local reconciliation loop.
 - `internal/process`: process ownership, cancellation, and cleanup.
-- `internal/provider`: Codex/Claude/Pi execution adapters.
+- `internal/provider`: Codex/Claude/Pi/Antigravity execution adapters.
 - `internal/workspace`: local workspace and Runtime-home preparation.
 - `internal/protocol`: the Daemon's routed command/event model. The wire shapes
   come from the generated `contracts/generated/go/runnergateway` module
@@ -44,7 +44,7 @@ stops and names the open file.
 
 `linger-computer-daemon --config <path>` reads the owner-only config emitted by
 the `linger-computer login` flow. It discovers and version-gates the
-configured Codex, Claude, and Pi installations.
+configured Codex, Claude, Pi, and Antigravity installations.
 It performs bounded protocol and authentication probes.
 It periodically refreshes authentication and unavailable Runtimes without a restart.
 The Claude check also probes idle Context homes, because each one can hold its
@@ -63,7 +63,7 @@ from an Operation wire request.
 
 Opening the local Registration store deletes records of retired Runtimes such as
 Hermes; connecting and reconnecting report Registration observations only for
-Codex, Claude and Pi.
+Codex, Claude, Pi and Antigravity.
 
 The owner-only control socket supports Runner inspection and local stop, plus
 managed service start/list/stop. Managed services retain PID, process-group,
@@ -219,9 +219,60 @@ Computer user's own instruction files:
   from the projected `config.toml` and its profiles.
 - Pi runs with `--no-context-files` and an empty `--system-prompt`, so it keeps
   its built-in prompt instead of the user's `SYSTEM.md`.
+- Antigravity is the exception: its ACP server has no switch that turns off
+  the user's own rules, skills and `~/.gemini/config/mcp_config.json`, so an
+  Antigravity run sees them next to the Daemon's instructions and servers.
 
 The user's own Claude Skills and the Skills of plugins they installed are still
 offered to Agents (`internal/workspace/claude_skills.go`).
+
+## Antigravity
+
+The Antigravity CLI (`agy`) runs through its Agent Client Protocol (ACP)
+server, `agy acp`: JSON-RPC 2.0 over stdio, one object per line. Its print
+mode (`agy -p`) is not used, because it signs in only with Google and waits
+for a browser sign-in when signed out.
+
+- Discovery runs `agy --version`, then an ACP `initialize`, then an empty
+  `session/new` in HOME. ACP's authentication-required error (`-32000`) on
+  `session/new` means signed out. No prompt is sent, so a probe stores no
+  conversation.
+- When `session/new` needs authentication and the environment carries
+  `GEMINI_API_KEY` or `GOOGLE_API_KEY`, the adapter selects the
+  `gemini-api-key` method once and retries. A Google sign-in is never
+  replaced by a key.
+- The model catalog is the session's `model` config option: one model per
+  family. A family's reasoning efforts are the levels its
+  `<family>-<level>` entries in `availableModels` name. A Run selects them
+  with `session/set_config_option` (`model`, then `thought_level`).
+- Each Operation runs in its own `agy acp` process; nothing is parked. A
+  first Run opens `session/new`, and its turn-started event reports the
+  session id as the checkpoint, like a Codex thread. Later Runs reopen it with
+  `session/load` and drop the history it replays. An id Antigravity has not
+  stored is not a usable session: `session/load` accepts it, but the prompt
+  then fails, so Linger never assigns one. A stored session replays at least
+  the prompt that made it, so a load that replays no prompt, or that
+  Antigravity refuses, ends as `session_not_found` before anything is
+  emitted, and the Run continues once in a new session. A Run yields to the
+  scheduler only after native work, because its session holds no prompt
+  before that.
+- The Daemon's instructions go in `_meta.antigravity.systemPrompt.append`, and
+  its MCP servers in the session's `mcpServers`.
+- `session/request_permission` goes to the Run's permission review when the
+  Context has one, with `execute` calls reviewed as shell commands. Otherwise
+  the adapter selects the allow option, as Pi runs without review.
+- Antigravity reports a model error, such as a rejected API key, as reply text
+  and ends the turn with `end_turn`. With no structured signal, such a Run
+  completes and the Room shows the text.
+- History reads, provider prepare, Local Skill scans and local models do not
+  support Antigravity, so Agent Memory skips Antigravity Agents.
+- The Gateway hello leaves out the Antigravity diagnostic while `agy` is not
+  installed, so such a Computer still connects to an Agent Service released
+  before Antigravity support. When `agy` is installed later, the next
+  diagnostics update reports it and the Gateway adds its Runtime
+  Registration, so no restart is needed. Once `agy` is installed, the Agent
+  Service must run this release first. The control API and `runtime check` keep reporting
+  Antigravity as not installed.
 
 ## Frozen source
 
@@ -266,15 +317,49 @@ through the standard-input protocol.
 
 ## Controlled desktop and browser tools
 
-On macOS the Computer gives each Operation two MCP tool entries (MCP is the Model
-Context Protocol). `computer` provides desktop screenshots and input. `browser`
-uses a pinned Playwright MCP. After actions such as click and type, Playwright
+Each Operation with installed drivers exposes two Model Context Protocol (MCP)
+tools, `computer.ui_exec` and `computer.ui_reset`. The Daemon keeps the native
+desktop service and the Playwright browser service private. Only the public
+entry appears in the model's tool catalog. Each nested action keeps its original
+permission check, arguments, evidence collector, operation lease and receipt.
+
+`ui_exec` runs an async JavaScript function body. The bundled Node child hosts
+QuickJS compiled to WebAssembly. A separate engine compiles the script. The
+execution engine has no filesystem, network, process or module loader, and it
+rejects dynamic code evaluation. The Daemon limits memory, runtime, call count
+and output. Only the explicit `state` object is intended to persist between
+calls within one Operation. An uncaught script error resets `state`, so a
+script catches the failures it expects. `ui_reset` discards this state and image handles.
+Applications and action records survive a reset. An unknown write outcome
+blocks further writes to its driver in this Operation. Every `ui_exec` and
+`ui_reset` result lists the Operation's unknown actions. Retained images share
+a 12 MiB budget; once it is spent, an action returns a text note in place of
+its image until `ui_reset`, so a completed action never reports an error.
+
+Use `await ui.page(url)` for a managed browser and `ui.window(pid, window_id)`
+for a macOS window. Use `ui.computer.list_windows({app: appName})` to discover
+a named window and check its title. `await target.observe()` returns the visible
+text and actions. Call `view.click(role, name)` on that observation and use its
+returned view for the next step. A newer driver call in the same namespace
+expires the previous observation. In a browser, `view.fill(fields)` resolves
+all named fields against one observation before sending the driver call. If an
+action has no browser snapshot, the helper obtains one. Use `ui.help("browser")`
+or `ui.help("computer")` for the underlying methods. `ui.emit(result)` selects
+text or native images for the model; the script receives opaque image handles.
+
+The public tool allows ten minutes. The default script budget is 165 seconds,
+with up to nine minutes per call. Nested calls reserve time to return their
+receipts. Cancellation stops scheduling actions; an already dispatched action
+can still complete within its hard deadline. After a script error, inspect the
+returned receipts and current state before taking another action.
+
+After actions such as click and type, Playwright
 writes the page snapshot to a file and returns only a link; the Daemon reads the
 file, puts the snapshot back into the result and deletes the file, so the model
 need not call `browser_snapshot` again. Only links under `.linger/browser-output/`
 are replaced.
 
-A Codex Context home receives these entries as URL servers in its projected
+A Codex Context home receives the public entry as a URL server in its projected
 `config.toml`, together with `mcp_oauth_credentials_store = "file"`. Codex
 otherwise reads the OAuth credentials of every URL server from the OS keyring,
 and on Linux a session bus whose Secret Service never answers blocks the turn
@@ -411,26 +496,20 @@ macOS also offers `run_script`: Cua runs one JavaScript program in a single call
 The Daemon admits only background, output-file-free scripts, fits the time limit into the call's remaining time, and cuts the result to its text: the first and last call-log lines and 40000 characters, with no screenshots.
 On macOS, `click` takes `delivery_mode: "foreground"` and `action`: the first for web controls that react only to a real pointer, the second for accessibility actions such as `show_alternate_ui`.
 
-Every Operation's developer instructions carry a list of the Computer tools, so
-the model need not search the tool catalog before its first call; macOS uses
-`MacToolGuide`, with the call shapes of the browser tools. For Codex the Runtime
-sets the Daemon's own `computer` and `browser` servers to
-`omit_tools_from = ["code_mode", "deferred"]`, only on Codex 0.163.0 and later;
-earlier Codex does not know the field and keeps the tools in code mode. The two
-tool groups are therefore ordinary function tools, neither in code mode nor
-deferred, like Codex's own `cua_repl` plugin: one model call is one JSON function
-call, not a `text(await tools.mcp__computer__…)` script.
+The macOS and Linux developer instructions identify the public entry. Codex
+0.163.0 and later calls the public tools directly, outside code mode and
+deferred tool search. Earlier versions use their standard tool discovery.
 Claude Code defers its own `WebSearch` and `WebFetch` behind `ToolSearch`, so
 every Claude Operation's developer instructions also name them and how to load
 them; Codex's `web_search` is not deferred and gets no such line.
 
 On macOS these tools show only the fields the Computer routes. They hide Cua's `scope` and `capture_id`; only `click` takes `delivery_mode`, as described above.
-Codex does not see the single macOS input tools: the `computer` server hides them
-with `disabled_tools`. All input goes through `run_actions`, with as many steps as
-possible in one call, like consecutive operations in one Codex script.
+Within `ui_exec`, scripts can call individual input methods. An input to a
+specified macOS window includes its next observation. Browser actions return
+a snapshot without Playwright's generated code transcript.
 `run_actions` sends each step as its own driver call, in order and without pauses, and stops at the first failed step.
-On macOS it always reads the window once after the last step and returns only the
-changes in the same result. By default it reads the last step's window, or the
+On macOS it reads the window after the last step and returns the full tree
+when available. By default it reads the last step's window, or the
 application's focused window when that step gave no `window_id`; pass `read` to
 read another window or add a `query`. When a step is refused or its result is
 unknown, the result lists the completed, unsent and possibly applied steps.
@@ -451,16 +530,16 @@ In Chrome it is a window of the Computer's own in the user's everyday Chrome,
 with the user's sign-ins, history and device trust. The window opens through
 Chrome's command line, one site per call, so no key reaches the user's other
 windows. A covered window keeps working only when Chrome runs with
-`--disable-backgrounding-occluded-windows`: a Chrome that is not running
-starts with it, and one running without it returns
-`COMPUTER_BROWSER_RESTART_REQUIRED`. The Daemon never quits the user's Chrome,
-because a quit loses text typed into a page and not yet sent: the Agent asks
-the user to quit Chrome, and the next `launch_app` starts it with the flag and
-`--restore-last-session`. The Daemon records that question in
-`computer-tools/everyday-chrome-quit` in the state directory, so a Daemon
-restart keeps it, and removes the record once Chrome started. Before the
-Computer opens its window, it waits until the list of Chrome windows stops
-changing, so every restored window is there. The Computer's window is the new
+`--disable-backgrounding-occluded-windows`, which Chrome reads only when it
+starts. A Chrome that is not running starts with it. A Chrome the user started
+without it is used as it runs: Chrome freezes the Computer's window while
+another window covers it completely, so `launch_app` sets
+`pauses_when_covered` and tells the Agent to ask the user to leave part of the
+window uncovered when a page stops changing. The Daemon never quits the user's
+Chrome and never asks the user to, because a quit loses text typed into a page
+and not yet sent. After a start, before the Computer opens its window, it
+waits until the list of Chrome windows stops changing, so every restored
+window is there. The Computer's window is the new
 window with one tab: the one whose address bar shows the site just opened, or
 the only new window when the home page moved to another site. Two or more new
 one-tab windows that the site does not tell apart are refused with
@@ -570,6 +649,22 @@ unavailable UI Automation returns `COMPUTER_PERMISSION_REQUIRED` without
 elevating. Whole-screen read-only tools use a separate desktop session, which
 does not affect the window tools. Browser and file tools do not depend on Cua.
 
+Windows input stays in the background, because Cua's foreground and desktop
+routes send real input through the system queue, where it reaches whichever
+window is in front or under the pointer when it arrives. The Daemon hides
+`delivery_mode` and `scope` from the Windows input tools and refuses them with
+`COMPUTER_INPUT_NOT_SENT` before anything is sent. It also leaves out
+`bring_to_front`, which keeps another app in front of the user, and
+`move_cursor`, which moves the user's pointer. `double_click` and
+`right_click` are refused in a Chromium window (class `Chrome_WidgetWin_*` or
+`CefBrowser*`: Chrome, Edge and Electron apps), where Cua sends them as real
+mouse events. Cua's background refusals, which recommend a foreground retry or
+`bring_to_front`, reach the Agent as `COMPUTER_INPUT_NOT_SENT` with the
+background route instead. Cua 0.35.4 refuses a background scroll in a
+Chromium window, so the Agent reads such a page with a `get_window_state`
+query instead; elsewhere a list or pane scrolls by its own `element_token`
+through UI Automation. Windows Operations get `WindowsToolGuide`.
+
 Linux controls the signed-in user's X11 desktop. The driver `local_linux.py` is
 embedded in the Go binary; it reads windows through AT-SPI and sends input with
 `xdotool`. The host needs `python3-pyatspi`, `xdotool`, ImageMagick, `xclip` and a
@@ -653,7 +748,13 @@ one seat in it. When every installed version of the Playwright Extension in
 the profile is 0.5.0 or later, the extension keeps several Playwright clients
 connected, each in its own tab group. Each Agent then has its own seat, and
 Agents work in their own background tabs at once. An earlier extension may drop
-one client when the next connects, so its whole profile is one seat. Release
+one client when the next connects, so its whole profile is one seat. Chrome lets the extension
+set a file input only when the user turns on Allow access to file URLs for it,
+which is off by default. When the profile's preferences show it off, the Daemon
+fails `browser_file_upload` with `BROWSER_FILE_ACCESS_DISABLED` before Chrome
+sees it. The Agent asks the user to turn it on, then opens the file chooser
+again: Chrome reloads the extension on the change, which closes the chooser,
+and saves the setting a few seconds later. Release
 bundles patch Playwright to keep focus emulation on its CDP connections, this
 Chrome and the Agent Chrome alike. Without it a background tab is hidden: it
 stops rendering, clicks wait for it, and mouse and key events are lost. One task or Live call holds a seat at a time, so tasks of
@@ -666,7 +767,10 @@ an unrelated part of its cleanup fails. The `computer` tool names are Cua 0.35.4
 `move_cursor`, `press_key`, `launch_app` and `bring_to_front`. `doctor` reports
 Chrome and the extension.
 
-The release bundle pins Playwright MCP 0.0.83. Pi's MCP extension uses the
+The release bundle pins Playwright MCP 0.0.83 and QuickJS-WASI 3.6.2.
+CLI and Desktop ship the same engine in `cli/computer-tools/node_modules/quickjs-wasi/`.
+The release manifest covers its JavaScript files and WebAssembly binary.
+Pi's MCP extension uses the
 official 1.2.0 API. Cua is pinned to the official 0.35.4 release assets: the
 signed macOS application and `cua-driver.exe` for Windows x64 and ARM64. The
 bundle includes every dependency resource and a per-file SHA-256 manifest; the

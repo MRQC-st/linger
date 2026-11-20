@@ -45,6 +45,13 @@ Gateway and runs Agents. The daemon exits with the app.
   The callback restores the originating window and forwards the return to its
   signed-in SPA, which requests TeamHub verification.
 
+- The Web link preview panel frames other sites. The window drops their
+  framing refusals (`X-Frame-Options`, CSP `frame-ancestors`) for frames of
+  the app, except the panel's frame, named `linger-url-preview:<id>`. When
+  that frame's final response refuses framing, the window sends
+  `preview.frame-refused`, and the panel offers the system browser instead,
+  where the user's sign-ins work.
+
 - `src/main/modules.ts`: `Module` interface, typed bus and the host that starts
   modules in dependency layers and stops them in reverse.
 - `src/main/*.ts`: one file per module (Enrollment, WorkspaceGrants,
@@ -55,7 +62,7 @@ Gateway and runs Agents. The daemon exits with the app.
   path. It fetches the pinned Node runtime (sources in the download region's
   order, `scripts/installs/README.md`) and unpacks the linger source package
   into the install location (the default home, or a folder picked under
-  Customize; tar runs inside the target with relative paths, and the
+  More options; tar runs inside the target with relative paths, and the
   finished folder is moved into place with `renameRetrying`, which waits out
   Windows' short-lived locks on new files) and starts the bundled
   `dist/installer/installer.js` headless (`--no-open`), which runs every
@@ -137,8 +144,11 @@ Gateway and runs Agents. The daemon exits with the app.
   [Packaging Details](../../docs/desktop-release.md#packaging-details) for
   where the minimum comes from.
   Quick Install installs the `recommendation` of the localmodels setup
-  report (`installer.js --inspect`, run once as the setup window opens):
-  `local-models` is the planned model served by Pi, shown with the model,
+  report (`installer.js --inspect`, run for the selected install location
+  as the setup window opens and again when that location changes, including
+  after a failed install). Checks keep their tool cache in the default home,
+  leave alternative locations untouched, and never migrate installations.
+  In the report, `local-models` is the planned model served by Pi, shown with the model,
   GPU, memory and download (the card's memory is the whole stack's, so
   "with its services"); otherwise the named runtime, with why there is no
   local model. The welcome screen shows the three model sources directly
@@ -169,11 +179,13 @@ Gateway and runs Agents. The daemon exits with the app.
   recommends `local-models` there, so the installer's setup adapter
   (`packages/local-installation/src/setup-plan.ts`) replaces that pick with
   an installed runtime (signed-in first), else Codex; that override and the
-  fallbacks go once the pinned tool reports `state`. The page adds no host rule of its own; while
-  the check runs the button waits with a spinner and says what it waits for
-  (the first run downloads the localmodels tool, counted by `download`
-  event lines before the report), and Customize marks the
-  recommended runtime and model. While installing, a step that downloads
+  fallbacks go once the pinned tool reports `state`. The page adds no host rule
+  of its own; while the check runs, plans that depend on it (Local model or
+  Auto subscription) wait with a spinner and say what they wait for (the first
+  run downloads the localmodels tool, counted by `download` event lines before
+  the report), while BYOK and an explicit Subscription runtime start right
+  away, and the source and runtime selectors mark the recommendation. While
+  installing, a step that downloads
   shows its bytes, what remains and the rate from the installer's byte
   counter (`localmodels.stack-progress/v1` for the local model and
   engine); a counter of one file (`partial`) shows only that file. When
@@ -229,7 +241,9 @@ Gateway and runs Agents. The daemon exits with the app.
   the `daemonId` the active enrollment named, and at start an enrollment that
   named none or another one is renewed once the server lists the capability,
   so a computer an earlier Set Up Again paired anew gets back the Computer
-  that holds its Daemon Identity, with its Agents.
+  that holds its Daemon Identity, with its Agents. TeamHub removes the Computer
+  the renewal named when it never bound a Daemon Identity and has no Agents
+  (the orphan that earlier Set Up Again left), in the same transaction.
   Before installing or resuming it moves the
   `COMPOSIO_API_KEY`, `SONIOX_API_KEY`, `XAI_API_KEY` and `TZ` of an unpacked
   source package's `.env` into `<home>/instances/desktop/user.env` once and
@@ -244,7 +258,7 @@ Gateway and runs Agents. The daemon exits with the app.
   `local-computers` and says what is missing (offline computer, no writable
   folder, or no signed-in runtime with each runtime's reported state) and logs
   `local_server.another_me_missing` or
-  `local_server.computer_offline_after_agents`. Customize → API keys takes the
+  `local_server.computer_offline_after_agents`. More options → API keys takes the
   Composio key only (`provider-keys.ts`); voice keys are saved in the app,
   and a `SONIOX_API_KEY` or `XAI_API_KEY` written into `user.env` by hand
   still reaches the services and overrides the app's. Install saves the edits
@@ -287,6 +301,41 @@ Gateway and runs Agents. The daemon exits with the app.
   Dock, the tray) shows setup until the computer is enrolled
   (`app-window.ts`), the main window after. The main window's server form
   without a server says Back to Setup instead of Cancel.
+  Main window loading policy (`windowLoadDecision` in `src/main/navigation.ts`):
+  all server loads (`boot`, `local_ready`, `resume_ready`, `server_changed`,
+  `port_moved`, `retry`, `prewarm`) pass through one decision helper so
+  duplicate `loadURL` calls on hot start are skipped when the target origin is
+  already loaded or pending without a shell page or load failure. `BaseWindow`
+  is created with `show: false` and revealed on the first `did-finish-load` or
+  `did-fail-load` after `show()`, with a short 1500 ms timeout fallback so a
+  stalled load still reveals the window; `preloadAuthenticated` loads the
+  enrolled server in the hidden window without showing it, and `prewarmAssets`
+  warms `/` and `/assets/*` in `session.defaultSession`'s HTTP cache. On
+  launch the window loads `serverUrl` without a blocking HTTP probe; if
+  `did-fail-load` fires and `localServer.resumable(serverUrl)` sees an active
+  resume or a valid matching `local-server.json`, it shows the
+  Starting page instead of `offline.html`. `window.did_finish_load` logs
+  `{ reason, duration_ms, target }` with origin + pathname only (never query or
+  hash), and `LocalServer` resume emits `local_server.resume_started`,
+  `local_server.resume_stage` (`stage`, `ms`), `local_server.resume_succeeded`
+  (`total_ms`), and `local_server.resume_failed` (`stage`, `total_ms`,
+  redacted `error` bounded to 500 chars with query/hash stripped). A resume
+  whose saved BYOK gateway did not come back still succeeds and logs
+  `local_server.byok_gateway_unavailable` (`code`, `message`).
+- `src/main/voice-window.ts`: the floating voice window. Electron cannot open
+  Document Picture-in-Picture windows, so the SPA opens a small native window
+  with `window.open("")` under the target `linger-voice-window-<n>`
+  (`voiceWindowRequest` in `navigation.ts` allows only that, from the server's
+  page; every other `window.open` is still denied) and renders its Voice Mode
+  or Recording window into it, so the call and its state stay in the main
+  page. The window is always on top (on every macOS Space), has no
+  parent so it stays up when the main window is minimized or closed to the
+  tray, and closes with the page (reload, crash, main window closed). While it
+  is open the page is not background-throttled. Only a window the main page
+  itself opened is kept; one from a frame in it is destroyed. Its native close button ends
+  Voice Mode; `lingerDesktop.voiceWindow.showMainWindow()` (its presence is
+  how the SPA knows the app supports this) brings the main window forward and
+  keeps the call. An app without `voiceWindow` keeps the in-page windows.
 - `src/shell/*.html`: app-owned pages (title bar, offline/setup page). They
   have no network access and talk to the main process via `src/preload/shell.ts`.
 - `src/preload/index.ts`: the only SPA API, `window.lingerDesktop`. Its
@@ -350,6 +399,10 @@ Gateway and runs Agents. The daemon exits with the app.
   left alone and it gives up after about two minutes. When the stop fails,
   the uninstaller offers Retry; Cancel (the default when silent) ends it with
   exit code 1 before anything is removed, so the uninstall can be run again.
+  The stop helper records its latest outcome in `<home>/installer/stop-latest.json`
+  and retains the first failure in `stop-first-failure.json`. These bounded
+  records contain only allowlisted failure stages, codes and service names,
+  never error text or paths; a successful retry keeps the first failure.
   It keeps `%APPDATA%\Linger` and the Linger home with all their data; a
   later install starts the services again (resume, or setup's Install).
   Setup over an installed release stops it the same way before it replaces
@@ -366,8 +419,10 @@ Gateway and runs Agents. The daemon exits with the app.
   controller under `runtime/model-services` (`foundations stop`), and to stop
   the stack's processes and the gateway the tool started, the library's
   Bifrost included (`stack down`); it downloads nothing, and Linger does not
-  end the tool's processes itself. Every step runs even when an earlier one
-  fails.
+  end the tool's processes itself. Every stop command runs even when an
+  earlier command fails. A present tool kit that fails verification makes
+  the stop fail, so the uninstaller retains the application for repair and
+  retry.
   On Windows the tool cannot prove and end a controller from a kit that has
   no stop command.
   A quit the person chose (the tray, the app menu, the Dock) does the same
@@ -375,11 +430,14 @@ Gateway and runs Agents. The daemon exits with the app.
   that keep running: `LocalServer` starts `installer.js --home <default
 home> --stop-local-models` under `ELECTRON_RUN_AS_NODE`, detached, with
   its output in `<home>/installer/local-models-stop.log`, and does not wait
-  for it. It runs only when `desktop/local-server.json` names an
+  for it. If the installed kit fails verification, the helper exits with a
+  failure and logs the repair guidance; the app still quits, and no unverified
+  tool runs. It runs only when `desktop/local-server.json` names an
   installation. The Computer exits with the app, so nothing uses the models
   until the next launch, whose resume applies the approved plan again even
   though the services still run, unless the person switched the Computer's
-  model source to a subscription or BYOK. A
+  model source to a subscription; a BYOK source gets its gateway mounted
+  again instead. A
   quit for an update or a relaunch, and the `--quit` of setup or the
   uninstaller (which stop the models themselves right after), leave them.
 - `src/main/legacy-migration.ts`: on start, stops a bridge an older version
@@ -429,7 +487,13 @@ home> --stop-local-models` under `ELECTRON_RUN_AS_NODE`, detached, with
 4. The computer needs Codex or Claude Code installed and signed in; the
    daemon finds them through the login shell PATH. The teamhub CLI runs on
    the app's own Node (`ELECTRON_RUN_AS_NODE`) in packaged builds and on the
-   `node` in PATH from source.
+   `node` in PATH from source. The Desktop TeamHub shell launcher uses
+   `wslpath` and `WSLENV` when WSL starts the Windows executable, so the
+   script path and `ELECTRON_RUN_AS_NODE` reach that process correctly.
+   The CLI translates absolute Linux paths for local attachments, input files
+   and Document file outputs using the invoking WSL distribution. Message text
+   and remote paths stay unchanged. The same local file checks apply to the
+   translated path.
 
 ## Source Package and Release
 

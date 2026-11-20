@@ -16,16 +16,18 @@ set -euo pipefail
 #   desktop-release.sh build <target>             fetch-native, compile and package
 #   desktop-release.sh manifest <dir> <version>   write the signed update manifest
 #                                                 (manifest.json and .sig) into <dir>
-#   desktop-release.sh install-scripts <dir> <version>
-#                                                 verify stack pins and copy install.sh
-#                                                 and install.ps1 into <dir>
 #   desktop-release.sh checksums <dir> <version>  write <dir>/SHA256SUMS.txt
 #   desktop-release.sh gitlab-upload <dir> <version>
 #                                                 upload <dir>'s files to a GitLab generic
 #                                                 package from a GitLab CI job (test builds only)
 #   desktop-release.sh github-release <dir> <tag> <version>
 #                                                 create or update the GitHub Release of <tag>
-#                                                 in RELEASE_REPO with <dir>'s files (gh)
+#                                                 in RELEASE_REPO with <dir>'s files (gh);
+#                                                 stable releases are created as drafts
+#   desktop-release.sh publish <tag> --notes-file <file>
+#                                                 attach release notes, publish a stable draft
+#                                                 release as latest, and remove matching
+#                                                 desktop-v<version>-rc.* prereleases
 #
 # Inputs (environment):
 #   DESKTOP_VERSION              release version, as printed by `version` (compile, package)
@@ -70,8 +72,8 @@ die() {
 
 usage() {
   echo "Usage: $0 version <tag> | fetch-native|compile|package|build <target>" \
-    "| manifest|install-scripts|checksums <dir> <version> | github-release <dir> <tag> <version>" \
-    "| gitlab-upload <dir> <version>" >&2
+    "| manifest|checksums <dir> <version> | github-release <dir> <tag> <version>" \
+    "| publish <tag> --notes-file <file> | gitlab-upload <dir> <version>" >&2
   exit 2
 }
 
@@ -289,6 +291,7 @@ cmd_build() {
 # packageFor in apps/desktop/src/main/update-manifest.ts. Linux and the
 # portable Windows folder only link to the release.
 update_packages='darwin-arm64:macos-arm64.app.tar.gz linux-x64:linux-x64.tar.gz win32-x64:windows-x64-setup.exe'
+required_installers='macos-arm64.dmg linux-x64.tar.gz windows-x64-setup.exe'
 
 # manifest.json lists every platform's package with its size and sha256, and
 # manifest.json.sig is its Ed25519 signature, made with DESKTOP_UPDATE_KEY.
@@ -346,32 +349,19 @@ NODE
     die "could not write the update manifest"
 }
 
-cmd_install_scripts() {
-  local dir="${1:-}" version="${2:-}"
-  [[ -d "$dir" && "$version" =~ $version_pattern ]] ||
-    die "install-scripts needs the folder holding the release files and the release version"
-  command -v node >/dev/null || die "install-scripts needs Node.js (node)"
-  node "$repo_root/scripts/sync-install-stack-pin.mjs" --root "$repo_root" --check
-  cp "$repo_root/scripts/install/install.sh" "$dir/install.sh"
-  cp "$repo_root/scripts/install/install.ps1" "$dir/install.ps1"
-  chmod 0755 "$dir/install.sh"
-  chmod 0644 "$dir/install.ps1"
-  echo "desktop-release: copied install.sh and install.ps1 for $version"
-}
-
 # Every release ships the three installers; SHA256SUMS.txt covers each file
-# of the version, guided installer scripts, extra ones such as the portable
-# zip and the app archive, and the update manifest and its signature when there are.
+# of the version, extra ones such as the portable zip and the app archive,
+# and the update manifest and its signature when there are.
 cmd_checksums() {
   local dir="${1:-}" version="${2:-}" required file files=()
   [[ -d "$dir" ]] || die "checksums needs the folder holding the release files"
   [[ "$version" =~ $version_pattern ]] || die "checksums needs the release version"
-  for required in macos-arm64.dmg linux-x64.tar.gz windows-x64-setup.exe; do
+  for required in $required_installers; do
     [[ -f "$dir/Linger-$version-$required" ]] || die "$dir has no Linger-$version-$required"
   done
   while IFS= read -r file; do
     files+=("$(basename "$file")")
-  done < <(find "$dir" -maxdepth 1 -type f \( -name "Linger-$version-*" -o -name install.sh -o -name install.ps1 -o -name manifest.json -o -name manifest.json.sig \) | LC_ALL=C sort)
+  done < <(find "$dir" -maxdepth 1 -type f \( -name "Linger-$version-*" -o -name manifest.json -o -name manifest.json.sig \) | LC_ALL=C sort)
   : >"$dir/SHA256SUMS.txt.part"
   for file in "${files[@]}"; do
     printf '%s  %s\n' "$(sha256_of "$dir/$file")" "$file" >>"$dir/SHA256SUMS.txt.part"
@@ -435,17 +425,79 @@ cmd_github_release() {
     notes="**Prerelease** for testing, not for general use. $notes"
     flags+=(--prerelease)
   else
-    # releases/latest, which the download links use, follows this flag.
-    flags+=(--latest)
+    # Stable releases start as drafts so subscribers and auto-updaters never
+    # see placeholder notes; `publish` attaches the release notes and marks latest.
+    flags+=(--draft)
   fi
   if gh release view "$tag" --repo "$repo" >/dev/null 2>&1; then
     gh release upload "$tag" "$dir"/* --repo "$repo" --clobber
     echo "desktop-release: updated the $tag release of $repo"
   else
     gh release create "$tag" "$dir"/* --repo "$repo" --title "Linger Desktop $version" --notes "$notes" "${flags[@]}"
-    echo "desktop-release: created the $tag release of $repo"
+    if [[ "$version" == *-* ]]; then
+      echo "desktop-release: created the $tag prerelease of $repo"
+    else
+      echo "desktop-release: created draft release $tag of $repo (publish with: $0 publish $tag --notes-file <file>)"
+    fi
   fi
   echo "desktop-release: https://github.com/$repo/releases/tag/$tag"
+}
+
+cmd_publish() {
+  local tag="${1:-}" notes_file="" version repo assets required missing=() rc_jq rc_tags rc_tag
+  shift || true
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --notes-file)
+        [[ $# -ge 2 ]] || die "publish --notes-file needs a file path"
+        notes_file="$2"
+        shift 2
+        ;;
+      *) die "unknown publish argument: $1" ;;
+    esac
+  done
+  [[ -n "$tag" && "$tag" == desktop-v* ]] ||
+    die "publish needs a stable desktop-v<version> tag and --notes-file <file>"
+  version="${tag#desktop-v}"
+  [[ "$version" =~ $version_pattern ]] ||
+    die "$tag does not hold a valid version"
+  [[ "$version" != *-* ]] ||
+    die "publish is for stable desktop-v<version> releases, not prereleases ($tag)"
+  [[ -n "$notes_file" && -f "$notes_file" ]] ||
+    die "publish needs an existing --notes-file <file>"
+  grep -q '[^[:space:]]' "$notes_file" ||
+    die "release notes file is empty: $notes_file"
+  repo="${RELEASE_REPO:-$default_release_repo}"
+  [[ "$repo" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]] || die "RELEASE_REPO must be owner/name, not $repo"
+  command -v gh >/dev/null || die "publish needs the GitHub CLI (gh)"
+
+  assets="$(gh release view "$tag" --repo "$repo" --json assets --jq '.assets[].name')" ||
+    die "could not read release $tag in $repo"
+  for required in $required_installers; do
+    grep -qxF "Linger-$version-$required" <<<"$assets" || missing+=("Linger-$version-$required")
+  done
+  grep -qxF "SHA256SUMS.txt" <<<"$assets" || missing+=("SHA256SUMS.txt")
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    die "refusing to publish $tag: missing required assets: ${missing[*]}"
+  fi
+
+  gh release edit "$tag" --repo "$repo" --notes-file "$notes_file" --draft=false --latest
+  echo "desktop-release: published $tag as latest in $repo"
+  echo "desktop-release: https://github.com/$repo/releases/tag/$tag"
+
+  rc_jq=".[] | select(.isPrerelease and (.isDraft | not) and (.tagName | startswith(\"desktop-v${version}-rc.\"))) | .tagName"
+  if rc_tags="$(gh release list --repo "$repo" --limit 100 --json tagName,isPrerelease,isDraft --jq "$rc_jq" 2>/dev/null)"; then
+    while IFS= read -r rc_tag; do
+      [[ -n "$rc_tag" ]] || continue
+      if gh release delete "$rc_tag" --repo "$repo" --cleanup-tag --yes; then
+        echo "desktop-release: removed graduated prerelease $rc_tag"
+      else
+        echo "desktop-release: warning: could not remove graduated prerelease $rc_tag" >&2
+      fi
+    done <<<"$rc_tags"
+  else
+    echo "desktop-release: warning: could not list prereleases for RC cleanup" >&2
+  fi
 }
 
 command="${1:-}"
@@ -457,9 +509,9 @@ case "$command" in
   package) cmd_package "$@" ;;
   build) cmd_build "$@" ;;
   manifest) cmd_manifest "$@" ;;
-  install-scripts) cmd_install_scripts "$@" ;;
   checksums) cmd_checksums "$@" ;;
   gitlab-upload) cmd_gitlab_upload "$@" ;;
   github-release) cmd_github_release "$@" ;;
+  publish) cmd_publish "$@" ;;
   *) usage ;;
 esac

@@ -13,19 +13,31 @@ export const appOrder: readonly TeamHubLocalRuntimeType[] = [
   "claude",
   "codex",
   "pi",
+  "antigravity",
 ];
 
 export const appNames = {
   claude: "Claude Code",
   codex: "Codex",
   pi: "Pi",
+  antigravity: "Antigravity",
 } satisfies Record<TeamHubLocalRuntimeType, string>;
 
 export const appDescriptions = {
   claude: "Anthropic's coding agent",
   codex: "OpenAI's coding agent",
   pi: "Open-source coding agent",
+  antigravity: "Google's coding agent",
 } satisfies Record<TeamHubLocalRuntimeType, string>;
+
+export const runtimeStatusLabels = {
+  authentication_required: "Sign-in required",
+  error: "Could not check",
+  incompatible: "Update needed",
+  not_installed: "Not installed",
+  ready: "Ready",
+  unknown: "Checking",
+} satisfies Record<RuntimeStatus, string>;
 
 export type ComputerReadiness =
   | { kind: "reconnecting" }
