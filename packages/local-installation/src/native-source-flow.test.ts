@@ -403,7 +403,10 @@ test("a BYOK install skips local models and a restart keeps its BYOK source", as
     name: "native-byok",
     setupChoice: "codex",
     byok: {
-      baseUrl: "https://api.example.com/v1",
+      baseUrl: "https://api.example.com",
+      path: "/v1",
+      endpoint: "/responses",
+      protocol: "openai-responses",
       apiKey: "sk-demo-key",
       modelId: "gpt-5.4",
       runtime: "codex",
@@ -1393,7 +1396,10 @@ test.each(["returned", "thrown"])(
       ...f,
       name: "native-flow",
       byok: {
-        baseUrl: "https://example.test/v1",
+        baseUrl: "https://example.test",
+        path: "/v1",
+        endpoint: "/chat/completions",
+        protocol: "openai-chat",
         modelId: "test",
         apiKey: "test-key",
         runtime: "pi",

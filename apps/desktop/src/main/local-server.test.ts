@@ -4545,7 +4545,7 @@ describe("InstallerApi polling", () => {
 });
 
 describe("setupLocalServerState", () => {
-  it("forwards BYOK check results and shortens home paths for the setup page", () => {
+  it("forwards BYOK check and model results and shortens home paths for the setup page", () => {
     const view = setupLocalServerState(
       {
         available: true,
@@ -4561,8 +4561,14 @@ describe("setupLocalServerState", () => {
         byokCheck: {
           state: "ready",
           protocol: "openai-responses",
+          url: "https://api.example.com/v1/responses",
           modelId: "gpt-5.4",
           contextWindow: 200_000,
+        },
+        byokModels: {
+          state: "ready",
+          url: "https://api.example.com/v1/models",
+          models: [{ id: "gpt-5.4", contextWindow: 200_000 }],
         },
         legacyBackup:
           "/home/alice/.simplexai/instances/desktop/simplex-backup-1",
@@ -4577,8 +4583,14 @@ describe("setupLocalServerState", () => {
     expect(view.byokCheck).toEqual({
       state: "ready",
       protocol: "openai-responses",
+      url: "https://api.example.com/v1/responses",
       modelId: "gpt-5.4",
       contextWindow: 200_000,
+    });
+    expect(view.byokModels).toEqual({
+      state: "ready",
+      url: "https://api.example.com/v1/models",
+      models: [{ id: "gpt-5.4", contextWindow: 200_000 }],
     });
   });
 });
