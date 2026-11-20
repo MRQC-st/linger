@@ -8,18 +8,10 @@ export function renderPersonalContextMethod(
   connectedApps: boolean,
   connectedAppKeys: readonly string[],
 ): string {
-  const connected = new Set(connectedApps ? connectedAppKeys : []);
-  const apps = APP_SOURCES.flatMap(({ keys, render }) => {
-    const present = keys.filter((key) => connected.has(key));
-    return present.length > 0 ? [render(present)] : [];
-  });
-  const listed = new Set(APP_SOURCES.flatMap(({ keys }) => keys));
-  const others = [...connected].filter((key) => !listed.has(key));
-  if (others.length > 0) apps.push(otherApps(others));
   return [
     METHOD,
     INTRO,
-    ...apps,
+    ...renderConnectedApps(connectedApps, connectedAppKeys, false),
     SHARED,
     WEB,
     "</personal-context-method>",
@@ -31,20 +23,37 @@ export function renderCompactPersonalContextMethod(
   connectedApps: boolean,
   connectedAppKeys: readonly string[],
 ): string {
-  const connected = new Set(connectedApps ? connectedAppKeys : []);
-  const apps = COMPACT_APP_SOURCES.flatMap(({ keys, render }) => {
-    const present = keys.filter((key) => connected.has(key));
-    return present.length > 0 ? [render(present)] : [];
-  });
-  const listed = new Set(COMPACT_APP_SOURCES.flatMap(({ keys }) => keys));
-  const others = [...connected].filter((key) => !listed.has(key));
-  if (others.length > 0) apps.push(compactOtherApps(others));
   return [
     COMPACT_METHOD,
-    ...apps,
+    ...renderConnectedApps(connectedApps, connectedAppKeys, true),
     COMPACT_SHARED,
     "</personal-context-method>",
   ].join("\n");
+}
+
+interface AppSourceRenderer {
+  readonly keys: readonly string[];
+  readonly render: (present: readonly string[]) => string;
+  readonly renderCompact: (present: readonly string[]) => string;
+}
+
+function renderConnectedApps(
+  connectedApps: boolean,
+  connectedAppKeys: readonly string[],
+  compact: boolean,
+): string[] {
+  const connected = new Set(connectedApps ? connectedAppKeys : []);
+  const apps = APP_SOURCES.flatMap(({ keys, render, renderCompact }) => {
+    const present = keys.filter((key) => connected.has(key));
+    if (present.length === 0) return [];
+    return [compact ? renderCompact(present) : render(present)];
+  });
+  const listed = new Set(APP_SOURCES.flatMap(({ keys }) => keys));
+  const others = [...connected].filter((key) => !listed.has(key));
+  if (others.length > 0) {
+    apps.push(compact ? compactOtherApps(others) : otherApps(others));
+  }
+  return apps;
 }
 
 const METHOD = `<personal-context-method>
@@ -70,29 +79,34 @@ const DOCUMENT_SOURCES: Record<string, string> = {
   github: "GitHub (teamhub github)",
 };
 
-const APP_SOURCES: readonly {
-  readonly keys: readonly string[];
-  readonly render: (present: readonly string[]) => string;
-}[] = [
+const APP_SOURCES: readonly AppSourceRenderer[] = [
   {
     keys: ["google_calendar"],
     render: () =>
       "- calendar (teamhub gcal list / free / read): scheduled meetings and events, attendees, free time.",
+    renderCompact: () =>
+      "- calendar (teamhub gcal list / free / read): events, attendees, free time.",
   },
   {
     keys: ["gmail", "outlook"],
     render: (present) =>
       `- mail (${present.map((key) => MAIL_COMMANDS[key]).join(" or ")} list / read): the latest exchanges with people, including meeting invites, reschedules, confirmations, replies and attachments. Knowledge holds mail only up to its last import; newer mail is only here.`,
+    renderCompact: (present) =>
+      `- mail (${present.map((key) => MAIL_COMMANDS[key]).join(" or ")} list / read): latest emails, invites, replies, and attachments since last knowledge import.`,
   },
   {
     keys: ["slack"],
     render: () =>
       "- Slack (teamhub slack search / read): recent team and partner discussion and progress.",
+    renderCompact: () =>
+      "- Slack (teamhub slack search / read): recent team discussion.",
   },
   {
     keys: ["googledrive", "notion", "github"],
     render: (present) =>
       `- ${present.map((key) => DOCUMENT_SOURCES[key]).join(", ")} search / read: documents, specs, code and issues.`,
+    renderCompact: (present) =>
+      `- ${present.map((key) => DOCUMENT_SOURCES[key]).join(", ")} search / read: docs, code, issues.`,
   },
 ];
 
@@ -114,32 +128,6 @@ For facts about the Human's own work and life:
 4. Check each link when chaining facts across sources; weigh recency and authority when sources disagree.
 5. Lead with the answer, note what wasn't checked, carry constraints into later steps or Tasks, and never send, book, or buy without approval.
 Sources:`;
-
-const COMPACT_APP_SOURCES: readonly {
-  readonly keys: readonly string[];
-  readonly render: (present: readonly string[]) => string;
-}[] = [
-  {
-    keys: ["google_calendar"],
-    render: () =>
-      "- calendar (teamhub gcal list / free / read): events, attendees, free time.",
-  },
-  {
-    keys: ["gmail", "outlook"],
-    render: (present) =>
-      `- mail (${present.map((key) => MAIL_COMMANDS[key]).join(" or ")} list / read): latest emails, invites, replies, and attachments since last knowledge import.`,
-  },
-  {
-    keys: ["slack"],
-    render: () =>
-      "- Slack (teamhub slack search / read): recent team discussion.",
-  },
-  {
-    keys: ["googledrive", "notion", "github"],
-    render: (present) =>
-      `- ${present.map((key) => DOCUMENT_SOURCES[key]).join(", ")} search / read: docs, code, issues.`,
-  },
-];
 
 function compactOtherApps(keys: readonly string[]): string {
   return `- other connected apps (${keys.join(", ")}): teamhub apps search "<action and app>" then teamhub apps execute.`;
