@@ -48,14 +48,11 @@ type RegistrationBinding struct {
 // does not think to search the web, as with the Computer tools in ToolGuide.
 const claudeWebToolGuide = `Web tools: WebSearch searches the web and WebFetch reads one page. They are loaded on demand: before the first call, load them with ToolSearch (query "select:WebSearch,WebFetch").`
 
-const compactToolGuideMaxContextWindow = 128 * 1024
-
 type ExecutionResolver struct {
 	// Bound by the local launcher; never accepted from a wire request.
 	ServiceCommand     []string
 	TeamHubCLIBin      string
 	ToolGuide          string // describes the Computer's local tools to every Operation
-	CompactToolGuide   string // compact ToolGuide for small-context or local models
 	Providers          map[string]ProviderInstallation
 	ProviderLookup     func(context.Context, string) (ProviderInstallation, bool, error)
 	WorkspaceGrants    map[string]WorkspaceGrant
@@ -144,10 +141,8 @@ func (r ExecutionResolver) Resolve(ctx context.Context, command protocol.Command
 			developerInstructions, trustedHostServiceInstructions, boundServiceInstructions(r.ServiceCommand),
 		}, "\n\n"))
 	}
-	contextWindow := installation.ContextWindows[request.Runtime.Model]
-	toolGuide := r.toolGuideFor(request.Runtime.Model, contextWindow)
-	if toolGuide != "" {
-		developerInstructions = strings.TrimSpace(developerInstructions + "\n\n" + toolGuide)
+	if r.ToolGuide != "" {
+		developerInstructions = strings.TrimSpace(developerInstructions + "\n\n" + r.ToolGuide)
 	}
 	if command.RuntimeType == "claude" {
 		developerInstructions = strings.TrimSpace(developerInstructions + "\n\n" + claudeWebToolGuide)
@@ -166,7 +161,7 @@ func (r ExecutionResolver) Resolve(ctx context.Context, command protocol.Command
 		PermissionReview:  request.RunContext.PermissionReview,
 		TeamHubCLIBin:     r.TeamHubCLIBin,
 		ThinkingLevel:     request.Runtime.ReasoningEffort,
-		ContextWindow:     contextWindow,
+		ContextWindow:     installation.ContextWindows[request.Runtime.Model],
 		ResumeSessionID:   resumeSessionID, Environment: cloneEnvironment(installation.Environment),
 		ThreadName: request.SessionOptions.ThreadName, SystemPrompt: systemPrompt,
 		BaseInstructions:      request.SessionOptions.BaseInstructions,
@@ -175,7 +170,7 @@ func (r ExecutionResolver) Resolve(ctx context.Context, command protocol.Command
 		CodexVersion:          installation.Version,
 		TenantID:              command.TenantID, OwnerActorID: binding.OwnerActorID, AgentID: command.AgentID,
 	}
-	if command.HostAccess == "trusted" || toolGuide != "" {
+	if command.HostAccess == "trusted" || r.ToolGuide != "" {
 		spec.DeveloperInstructions = &developerInstructions
 	}
 	// The profile path is stable and depends only on the Agent-level credential,
@@ -443,15 +438,4 @@ func boundServiceInstructions(command []string) string {
 	}
 	encoded, _ := json.Marshal(command)
 	return "The current Computer CLI executable and fixed arguments are " + string(encoded) + ". Append daemon service start <name> -- <command> [args...], daemon service list --json, or daemon service stop <name> to this exact argument vector. Quote arguments for the host shell. Do not invoke the bare global linger-computer launcher or choose another config. This binding contains no credential."
-}
-
-func isLocalModelID(model string) bool {
-	return strings.HasPrefix(model, "localmodels/") || strings.HasPrefix(model, "localmodels-library/")
-}
-
-func (r ExecutionResolver) toolGuideFor(model string, contextWindow int) string {
-	if r.CompactToolGuide != "" && (isLocalModelID(model) || (contextWindow > 0 && contextWindow <= compactToolGuideMaxContextWindow)) {
-		return r.CompactToolGuide
-	}
-	return r.ToolGuide
 }

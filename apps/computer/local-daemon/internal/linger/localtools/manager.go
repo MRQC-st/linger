@@ -42,13 +42,14 @@ type Options struct {
 
 type Manager struct {
 	// liveSlot admits one Live browser call at a time; see lockLive.
-	liveSlot     chan struct{}
-	liveSessions map[string]*liveBrowserSession
-	options      Options
-	env          []string
-	journal      *actionJournal
-	mu           sync.Mutex
-	cuaLaunch    sync.Mutex
+	liveSlot           chan struct{}
+	liveSessions       map[string]*liveBrowserSession
+	options            Options
+	env                []string
+	journal            *actionJournal
+	mu                 sync.Mutex
+	cuaLaunch          sync.Mutex
+	cuaInputGeneration atomic.Uint64
 	// cuaGrant is the running `cua-driver permissions grant`, at most one.
 	cuaGrantMu sync.Mutex
 	cuaGrant   *exec.Cmd
@@ -293,7 +294,7 @@ func (m *Manager) Bind(ctx context.Context, spec provider.OperationSpec, identit
 	}{
 		{"computer", computerTools, computerCall, op.computerEvidence, nil}, {"browser", browserTools, browserCall, op.browserEvidence, op.browserAllowed},
 	} {
-		server, err := openToolServer(opCtx, identity, binding.tools, op.wrap(binding.call))
+		server, err := openToolServer(opCtx, identity, binding.tools, op.wrap(binding.call), mcpproxy.LocalToolTimeout)
 		if err != nil {
 			return errors.Join(err, op.close())
 		}
@@ -686,6 +687,7 @@ func (m *Manager) startPlaywright(ctx context.Context, launch playwrightLaunch) 
 	if err := privatefs.EnsureDir(launch.output); err != nil {
 		return nil, err
 	}
+	launch.config["codegen"] = "none"
 	launch.config["outputDir"] = launch.output
 	data, _ := json.Marshal(launch.config)
 	if err := privatefs.WriteFile(launch.configPath, data, false); err != nil {

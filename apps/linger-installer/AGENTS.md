@@ -18,6 +18,8 @@ it prevents execution after those writes, and shutdown drains that initial save
 before returning, just as it waits for an executing job. An initial input-save
 failure is reported by start without interrupting shutdown's remaining cleanup;
 storage failures for retained jobs still propagate.
+A closed native sign-in input reports failure without stopping the installer;
+retry starts a new owned login process.
 A start returns the instance's running or queued job; a job that finished its
 run and waits for the person (`waiting_user`, e.g. `LOCAL_MODELS_UNAVAILABLE`)
 is canceled and replaced, so Try Again checks the computer again.
@@ -97,6 +99,10 @@ helper is detached: Linger quits and its log records that the models may
 still be running. The full `--stop` command reports the same failure. Windows
 uninstall aborts on that failure; replacement setup reports it and proceeds.
 A missing pinned kit has nothing to stop.
+
+`--inspect` checks without migrating installations. Its optional
+`--inspect-target` selects the home whose disk and runtimes are checked;
+`--home` still owns the inspection tool cache and state.
 
 Every other mode first converts an install from before the rename to Linger
 (`migrateLegacyInstallation`); `--migrate` does only that and exits, for the
