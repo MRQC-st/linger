@@ -965,13 +965,29 @@ export function voiceTrackFailureCode(error: unknown): string {
   if (error instanceof TeamHubVoiceRuntimeError)
     return `teamhub_http_${error.status}`;
   if (!(error instanceof Error)) return "unknown";
-  if ("code" in error) {
-    if (error.code === "ECONNRESET") return "network_reset";
-    if (error.code === "ETIMEDOUT") return "network_timeout";
-    if (error.code === "EPIPE") return "network_pipe";
-  }
-  return error instanceof VoiceFailure ? error.code : "unknown";
+  if (error instanceof VoiceFailure) return error.code;
+  const code = "code" in error ? error.code : undefined;
+  if (typeof code !== "string") return "unknown";
+  return (
+    networkFailureCodes[code] ??
+    (tlsErrorCode.test(code) ? "network_tls" : "unknown")
+  );
 }
+
+// Node's system error codes for a connection that never reached the provider.
+const networkFailureCodes: Partial<Record<string, string>> = {
+  ECONNRESET: "network_reset",
+  ETIMEDOUT: "network_timeout",
+  EPIPE: "network_pipe",
+  ENOTFOUND: "network_dns",
+  EAI_AGAIN: "network_dns",
+  ECONNREFUSED: "network_refused",
+  EPROTO: "network_tls",
+};
+// Node's TLS codes (ERR_TLS_*, ERR_SSL_*) and OpenSSL's certificate
+// verification codes (CERT_HAS_EXPIRED, SELF_SIGNED_CERT_IN_CHAIN, ...).
+const tlsErrorCode =
+  /^ERR_(TLS|SSL)_|CERT|^UNABLE_TO_VERIFY_LEAF_SIGNATURE$|^HOSTNAME_MISMATCH$/;
 
 export const reportVoiceObservationWithRetry = async (
   client: Pick<TeamHubVoiceRuntimeClient, "reportObservation">,
