@@ -298,36 +298,12 @@ func checkModel(model wire.LocalModel) error {
 	if _, _, err := poolKind(model.Pool); err != nil && (model.Pool != "" || model.Fit != "none") {
 		return invalid("pool", model.Pool)
 	}
-	if reason := model.Availability.Reason; reason != nil &&
-		!slices.Contains(availabilityCodes, reason.Code) {
-		return invalid("availability reason", reason.Code)
-	}
-	if model.Download != nil && model.Download.Step != "download" && model.Download.Step != "verify" {
-		return invalid("download step", model.Download.Step)
-	}
-	if model.Error != nil && !slices.Contains(errorCodes, model.Error.Code) {
-		return invalid("error code", model.Error.Code)
-	}
-	if model.Note != nil && model.Note.Code != "NO_ROOM_TO_LOAD" {
-		return invalid("note", model.Note.Code)
-	}
 	// An Agent stores pi_model as its runtime_model, so it is never cut.
 	if len(model.PiModel) > 200 {
 		return invalid("pi_model", model.PiModel)
 	}
 	if model.TokensPerSecond != nil && (math.IsNaN(*model.TokensPerSecond) || math.IsInf(*model.TokensPerSecond, 0) || *model.TokensPerSecond < 0) {
 		return errors.New("model tokens_per_second is outside the contract")
-	}
-	if model.Family != "" && !slices.Contains(families, model.Family) {
-		return invalid("family", model.Family)
-	}
-	if model.Architecture != "" && !slices.Contains(architectures, model.Architecture) {
-		return invalid("architecture", model.Architecture)
-	}
-	for index, capability := range model.Capabilities {
-		if !slices.Contains(capabilities, capability) || slices.Contains(model.Capabilities[:index], capability) {
-			return invalid("capabilities", capability)
-		}
 	}
 	if model.SourceURL != "" && (len(model.SourceURL) > 2048 || !sourceURLPattern.MatchString(model.SourceURL)) {
 		return invalid("source_url", model.SourceURL)
