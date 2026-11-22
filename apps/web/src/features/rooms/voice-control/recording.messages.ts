@@ -84,6 +84,8 @@ export const recordingMessages = defineMessages("recording", {
     "Reconnecting transcript updates; saved text will sync after reconnection",
   statusReconnectingRecording:
     "Reconnecting recording status; waiting for server confirmation",
+  statusMicrophoneMuted:
+    "Microphone muted. Your voice is not recorded until you resume.",
   statusUnconfirmedAfterStop:
     "Some transcript segments are unconfirmed. Recovery will be attempted after stopping.",
   statusUnconfirmed:
