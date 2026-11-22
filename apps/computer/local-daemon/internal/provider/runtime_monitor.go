@@ -21,7 +21,10 @@ type RuntimeMonitorOptions struct {
 	OnChanged             func(DiscoveryResult) error
 	OnError               func(error)
 	Discover              func(context.Context, DiscoveryOptions) (DiscoveryResult, error)
-	FullRefreshAllowed    func() bool
+	// RefreshAllowed reports whether periodic discovery and authentication
+	// refreshes should run. Nil means allowed.
+	RefreshAllowed     func() bool
+	FullRefreshAllowed func() bool
 	// RuntimeBusy reports an active operation. A running operation proves its
 	// Runtime works, so an inconclusive auth probe then keeps the ready state.
 	RuntimeBusy func() bool
@@ -64,6 +67,9 @@ func MonitorRuntimeDiagnostics(ctx context.Context, options RuntimeMonitorOption
 			tick++
 		case <-options.Refresh:
 			requested = true
+		}
+		if options.RefreshAllowed != nil && !options.RefreshAllowed() {
+			continue
 		}
 		activeDiscovery = resolveDiscovery()
 		envChanged := !maps.Equal(prevEnv, activeDiscovery.Environment) || !maps.Equal(prevPaths, activeDiscovery.ConfiguredPaths)

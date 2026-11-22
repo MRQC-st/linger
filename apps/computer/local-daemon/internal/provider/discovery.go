@@ -166,7 +166,11 @@ func diagnose(ctx context.Context, kind, executable, protocol string, options Di
 	}
 	observation.EntryPath, observation.ExecutablePath = entry, canonical
 	observation.ExecutionPath = options.Environment["PATH"]
-	command := native.NewInvocation(canonical, nil).WithEnvironment(options.Environment)
+	probeEnv := options.Environment
+	if kind == "claude" {
+		probeEnv = claudeProbeEnvironment(options.Environment)
+	}
+	command := native.NewInvocation(canonical, nil).WithEnvironment(probeEnv)
 	version, err := discoverRuntimeVersion(ctx, command, budget)
 	if err != nil {
 		return reject("error", "RUNTIME_DIAGNOSTIC_FAILED", "Runtime version probe failed")
@@ -183,7 +187,7 @@ func diagnose(ctx context.Context, kind, executable, protocol string, options Di
 	// Protocol/authentication still receive their own bounded phase afterward.
 	probe, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
-	environment := options.Environment
+	environment := probeEnv
 	if kind == "codex" {
 		// Discovery lists models, so its home reuses a Context's catalog
 		// instead of fetching it on every refresh.

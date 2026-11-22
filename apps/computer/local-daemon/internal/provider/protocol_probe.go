@@ -7,6 +7,7 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"maps"
 	"os/exec"
 	"strings"
 	"sync"
@@ -83,6 +84,7 @@ func probeRuntimeProtocol(ctx context.Context, runtimeType, executable string, e
 		args = []string{"acp"}
 		payload = `{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":1,"clientCapabilities":{}}}` + "\n"
 	case "claude":
+		environment = claudeProbeEnvironment(environment)
 		args = []string{
 			"-p", "--output-format", "stream-json", "--input-format", "stream-json", "--verbose",
 			"--bare", "--safe-mode", "--no-session-persistence", "--disable-slash-commands",
@@ -215,6 +217,7 @@ func probeClaudeAuthentication(ctx context.Context, executable string, environme
 }
 
 func probeClaudeAuthStatus(ctx context.Context, executable string, prepared map[string]string, timeout time.Duration) runtimeProbeOutcome {
+	prepared = claudeProbeEnvironment(prepared)
 	stdout, _, err := runBoundedProbe(ctx, executable, []string{"auth", "status", "--json"}, prepared, "", boundedAuthTimeout(timeout))
 	var status struct {
 		LoggedIn *bool `json:"loggedIn"`
@@ -230,6 +233,28 @@ func probeClaudeAuthStatus(ctx context.Context, executable string, prepared map[
 		return runtimeProbeOutcome{Status: "authentication_required", Code: "RUNTIME_AUTHENTICATION_REQUIRED", Message: "Claude Code login is required"}
 	}
 	return runtimeProbeOutcome{Status: "error", Code: "RUNTIME_DIAGNOSTIC_FAILED", Message: "Claude authentication status probe failed"}
+}
+
+// claudeProbeEnvironment suppresses Claude Code's background telemetry, error
+// reporting, auto-update, and nonessential startup pings during periodic
+// diagnostic probes without mutating the caller's environment or overriding
+// explicit settings.
+func claudeProbeEnvironment(environment map[string]string) map[string]string {
+	result := maps.Clone(environment)
+	if result == nil {
+		result = make(map[string]string, 4)
+	}
+	for _, entry := range [][2]string{
+		{"CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC", "1"},
+		{"DISABLE_AUTOUPDATER", "1"},
+		{"DISABLE_ERROR_REPORTING", "1"},
+		{"DISABLE_TELEMETRY", "1"},
+	} {
+		if _, exists := result[entry[0]]; !exists {
+			result[entry[0]] = entry[1]
+		}
+	}
+	return result
 }
 
 func boundedAuthTimeout(timeout time.Duration) time.Duration {

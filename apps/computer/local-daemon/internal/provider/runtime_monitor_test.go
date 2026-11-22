@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -318,5 +320,124 @@ func TestRuntimeMonitorRunsARequestedFullRefreshBeforeItsSchedule(t *testing.T) 
 	}
 	if len(published) != 1 || len(published[0].Diagnostics[0].Models) != 1 {
 		t.Fatalf("published = %+v, want the refreshed Pi model list", published)
+	}
+}
+
+func TestRuntimeMonitorSkipsAllRefreshesWhenRefreshDisallowed(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX script")
+	}
+	root := t.TempDir()
+	claude := filepath.Join(root, "claude")
+	authTrace := filepath.Join(root, "auth-trace")
+	script := `#!/bin/sh
+echo called >> "$AUTH_TRACE"
+echo '{"loggedIn":true}'
+`
+	if err := os.WriteFile(claude, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	primeTestExecutable(t, claude, "AUTH_TRACE="+os.DevNull)
+	initial := DiscoveryResult{Diagnostics: []RuntimeDiagnostic{{
+		Type: "claude", Status: "ready", Protocol: "stream-json", Version: "2.1.284", ExecutablePath: claude,
+	}}}
+	var allowed atomic.Bool
+	var fullRefreshes atomic.Int32
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Millisecond)
+	defer cancel()
+	err := MonitorRuntimeDiagnostics(ctx, RuntimeMonitorOptions{
+		Initial: initial, RefreshInterval: 5 * time.Millisecond, FullRefreshEveryTicks: 2,
+		RefreshAllowed: func() bool { return allowed.Load() },
+		Discovery: DiscoveryOptions{
+			Timeout: 5 * time.Second,
+			Environment: map[string]string{
+				"HOME": root, "CLAUDE_CONFIG_DIR": root, "ANTHROPIC_API_KEY": "fixture", "AUTH_TRACE": authTrace,
+			},
+		},
+		Discover: func(context.Context, DiscoveryOptions) (DiscoveryResult, error) {
+			fullRefreshes.Add(1)
+			return initial, nil
+		},
+		OnChanged: func(DiscoveryResult) error { return nil },
+	})
+	if err != nil && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatal(err)
+	}
+	if fullRefreshes.Load() != 0 {
+		t.Fatalf("full refreshes = %d, want 0 while refresh is disallowed", fullRefreshes.Load())
+	}
+	if data, readErr := os.ReadFile(authTrace); !errors.Is(readErr, os.ErrNotExist) {
+		t.Fatalf("auth probe ran while refresh was disallowed: err=%v data=%q", readErr, data)
+	}
+}
+
+func TestClaudeDiagnosticProbesDisableNonessentialTraffic(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("fixture uses a POSIX script")
+	}
+	root := t.TempDir()
+	claude := filepath.Join(root, "claude")
+	envTrace := filepath.Join(root, "env-trace")
+	script := `#!/bin/sh
+printf '%s|%s|%s|%s|%s\n' "$1" "$CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC" "$DISABLE_AUTOUPDATER" "$DISABLE_ERROR_REPORTING" "$DISABLE_TELEMETRY" >> "$ENV_TRACE"
+if [ "$1" = "--version" ]; then
+  echo "2.1.284 (Claude Code)"
+  exit 0
+fi
+if [ "$1" = "auth" ]; then
+  echo '{"loggedIn":true}'
+  exit 0
+fi
+read line
+case "$line" in
+  *linger-computer-doctor*)
+    echo '{"type":"control_response","response":{"subtype":"success","request_id":"linger-computer-doctor"}}'
+    ;;
+  *linger-catalog*)
+    echo '{"type":"control_response","response":{"subtype":"success","request_id":"linger-catalog","response":{"models":[{"value":"claude-sonnet-4-6","displayName":"Claude Sonnet 4.6"}]}}}'
+    ;;
+esac
+`
+	if err := os.WriteFile(claude, []byte(script), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	primeTestExecutable(t, claude, "ENV_TRACE="+os.DevNull)
+	callerEnv := map[string]string{
+		"PATH": root, "HOME": root, "CLAUDE_CONFIG_DIR": root,
+		"ANTHROPIC_API_KEY": "fixture", "ENV_TRACE": envTrace,
+	}
+	options := DiscoveryOptions{
+		Runtimes:        []string{"claude"},
+		ConfiguredPaths: map[string]string{"claude": claude},
+		Environment:     callerEnv,
+		Timeout:         10 * time.Second,
+	}
+	discovered, err := Discover(t.Context(), options)
+	if err != nil || len(discovered.Diagnostics) != 1 || discovered.Diagnostics[0].Status != "ready" {
+		t.Fatalf("Discover(claude) = %+v, err=%v", discovered, err)
+	}
+	if _, mutated := callerEnv["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"]; mutated {
+		t.Fatal("Discover mutated caller environment")
+	}
+	refreshed, err := RefreshRuntimeAuthentication(t.Context(), discovered, options)
+	if err != nil || refreshed.Diagnostics[0].Status != "ready" {
+		t.Fatalf("RefreshRuntimeAuthentication(claude) = %+v, err=%v", refreshed, err)
+	}
+	data, err := os.ReadFile(envTrace)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 5 {
+		t.Fatalf("expected version, auth, protocol, catalog, and refresh probes; got %q", lines)
+	}
+	for _, line := range lines {
+		if !strings.HasSuffix(line, "|1|1|1|1") {
+			t.Fatalf("Claude probe did not disable nonessential traffic: %q (all=%q)", line, lines)
+		}
+	}
+	overridden := claudeProbeEnvironment(map[string]string{"DISABLE_TELEMETRY": "0"})
+	if overridden["DISABLE_TELEMETRY"] != "0" || overridden["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] != "1" {
+		t.Fatalf("claudeProbeEnvironment override = %#v", overridden)
 	}
 }
