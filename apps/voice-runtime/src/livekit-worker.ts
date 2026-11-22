@@ -192,7 +192,10 @@ export class VoiceTrackWorker {
               controller.abort();
               await withTimeout(
                 ctx.room.localParticipant?.setAttributes({
+                  // Clients that predate the code read only this flag.
                   "linger.voice_dictation_failure": "transcript_unconfirmed",
+                  "linger.voice_dictation_failure_code":
+                    voiceTrackFailureCode(error),
                   "linger.voice_dictation_failure_generation":
                     String(generation),
                 }) ?? Promise.resolve(),
@@ -527,6 +530,7 @@ export class VoiceTrackWorker {
         ...(this.dictation && resetDictation
           ? {
               "linger.voice_dictation_failure": "",
+              "linger.voice_dictation_failure_code": "",
               "linger.voice_dictation_failure_generation": "",
             }
           : {}),
