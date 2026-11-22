@@ -240,6 +240,11 @@ Go service owning Human HTTP/SSE, Agent callbacks, and active product state.
   environment key over one saved in the product (`voice_provider_keys`, sealed
   with `TEAMHUB_SECRET_ENCRYPTION_KEY`), so a save applies without a restart
   on every replica. A save wakes the Node Services voice workers best effort.
+  Only a save checks a key with its provider, never a use. A Soniox key is
+  also probed on the realtime stream (the start request, no audio, five
+  seconds at most), and Soniox's HTTP status gives a refusal its code
+  (`VOICE_KEY_REJECTED`, `VOICE_KEY_NO_BALANCE`,
+  `VOICE_KEY_NO_REALTIME_PERMISSION`, else `VOICE_PROVIDER_UNAVAILABLE`).
 - Web search: `internal/websearch` runs Agent searches and page reads through
   Tavily, Brave, Firecrawl and You.com with deployment-wide keys in
   `web_search_keys` (sealed with `TEAMHUB_SECRET_ENCRYPTION_KEY`, read at each
