@@ -35,6 +35,7 @@ import type {
 import { commonMessages } from "@/i18n/common.messages";
 import { translate } from "@/i18n/language";
 import { RichMessage, useT, useTranslation } from "@/i18n/use-translation";
+import { cn } from "@/lib/cn";
 
 import {
   type AssignableLocalModelAgent,
@@ -52,6 +53,8 @@ import {
 } from "./local-model-dialogs";
 import {
   actionErrorCopy,
+  debugBannerCopy,
+  hostBlockerCopy,
   libraryUnavailableCopy,
   memoryGuidanceCopy,
   modelSourceReadErrorCopy,
@@ -71,6 +74,7 @@ import {
 import {
   downloadStopped,
   formatGigabytes,
+  hostBlocker,
   joinList,
   loadCheck,
   localSwitchTargets,
@@ -350,7 +354,8 @@ function ComputerModels({
     view.viewer_is_owner &&
     view.computer.status === "online",
   );
-  const guidance = view?.available ? memoryGuidance(view) : null;
+  const blocker = view?.available ? hostBlocker(view) : null;
+  const guidance = view?.available && !blocker ? memoryGuidance(view) : null;
   const queryErrorCode =
     query.error instanceof TeamHubError ? query.error.code : undefined;
   const showComputerPicker =
@@ -523,10 +528,12 @@ function ComputerModels({
             />
           ) : null}
           <Library
+            blocker={blocker}
             computer={computer}
             dialog={dialog}
             guidance={guidance}
             onRefresh={() => refresh.mutate()}
+            onSwitchToByok={status ? () => changeTab("byok") : undefined}
             onUseForAgents={(modelId) =>
               switcher.request({ local_model_id: modelId, mode: "local" })
             }
@@ -619,10 +626,12 @@ function OfflineMessage({
 }
 
 function Library({
+  blocker,
   computer,
   dialog,
   guidance,
   onRefresh,
+  onSwitchToByok,
   onUseForAgents,
   rechecking,
   setDialog,
@@ -632,10 +641,12 @@ function Library({
   tenantId,
   view,
 }: {
+  blocker: ReturnType<typeof hostBlocker>;
   computer?: InventoryComputer;
   dialog: Dialog | null;
   guidance: ReturnType<typeof memoryGuidance>;
   onRefresh: () => void;
+  onSwitchToByok?: () => void;
   onUseForAgents: (modelId: string) => void;
   rechecking: boolean;
   setDialog: (dialog: Dialog | null) => void;
@@ -1023,6 +1034,10 @@ function Library({
           : null))
       : null;
   const failedEntry = failure ? find(failure.modelId) : undefined;
+  const debugCopy =
+    view.available && view.debug ? debugBannerCopy(view.debug, t) : undefined;
+  const blockerCopy =
+    view.available && blocker ? hostBlockerCopy(blocker, t) : undefined;
   const guidanceCopy =
     !offline && view.available && guidance
       ? memoryGuidanceCopy(guidance, t)
@@ -1133,6 +1148,69 @@ function Library({
                 })}
               </FormFeedback>
             </div>
+          ) : null}
+          {debugCopy ? (
+            <aside
+              aria-label={t(m.debugBannerRegion)}
+              className="mt-6 flex flex-col items-start justify-between gap-3 rounded-xl border border-[var(--app-status-warning-border)] bg-[var(--app-status-warning-surface)] px-4 py-3 sm:flex-row"
+            >
+              <div className="min-w-0 flex-1">
+                <p className="text-sm font-medium text-app-warning">
+                  {debugCopy.title}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {debugCopy.body}
+                </p>
+              </div>
+            </aside>
+          ) : null}
+          {blocker && blockerCopy ? (
+            <aside
+              aria-label={t(m.hostBlockerRegion)}
+              className={cn(
+                "mt-6 flex flex-col items-start justify-between gap-3 rounded-xl border px-4 py-3 sm:flex-row",
+                blocker.code === "GPU_UNSUPPORTED"
+                  ? "border-border bg-muted/60"
+                  : "border-[var(--app-status-warning-border)] bg-[var(--app-status-warning-surface)]",
+              )}
+            >
+              <div className="min-w-0 flex-1">
+                <p
+                  className={cn(
+                    "text-sm font-medium",
+                    blocker.code === "GPU_UNSUPPORTED"
+                      ? "text-foreground"
+                      : "text-app-warning",
+                  )}
+                >
+                  {blockerCopy.title}
+                </p>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  {blockerCopy.body}
+                </p>
+              </div>
+              {blocker.code === "GPU_UNSUPPORTED" ? (
+                onSwitchToByok && !readOnly ? (
+                  <Button
+                    className="shrink-0"
+                    onClick={onSwitchToByok}
+                    size="compact"
+                    tone="primary"
+                  >
+                    {t(m.switchToByok)}
+                  </Button>
+                ) : null
+              ) : !offline && !readOnly ? (
+                <Button
+                  className="shrink-0"
+                  loading={rechecking}
+                  onClick={onRefresh}
+                  size="compact"
+                >
+                  {t(m.recheckMemory)}
+                </Button>
+              ) : null}
+            </aside>
           ) : null}
           {guidanceCopy ? (
             <aside

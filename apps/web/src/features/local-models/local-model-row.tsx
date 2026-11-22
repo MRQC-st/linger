@@ -83,7 +83,9 @@ const familyBrands: Record<NonNullable<LocalModel["family"]>, FamilyBrand> = {
 };
 
 function familyBrand(family: LocalModel["family"]): FamilyBrand {
-  return family ? familyBrands[family] : defaultBrand;
+  return family && Object.hasOwn(familyBrands, family)
+    ? familyBrands[family]
+    : defaultBrand;
 }
 
 function cardTone(
