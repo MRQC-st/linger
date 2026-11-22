@@ -190,18 +190,28 @@ export function VoiceFocusSurface({
         ? t(m.statusReconnectingTranscript)
         : livekit?.captureSyncStatus === "recovering"
           ? t(m.statusReconnectingRecording)
-          : transcriptIncomplete
-            ? inputInterrupted
-              ? t(m.statusUnconfirmedAfterStop)
-              : t(m.statusUnconfirmed)
-            : finalizing
-              ? t(m.statusGeneratingFiles)
-              : undefined);
+          : paused && captureActive
+            ? t(m.statusMicrophoneMuted)
+            : transcriptIncomplete
+              ? inputInterrupted
+                ? t(m.statusUnconfirmedAfterStop)
+                : t(m.statusUnconfirmed)
+              : finalizing
+                ? t(m.statusGeneratingFiles)
+                : undefined);
   const surfaceError =
     actionError ??
     armError ??
     captureError ??
     (autoArming || armStatus === "arming" ? undefined : voice.listenerError);
+  // "Listening…" claims speech is being transcribed right now; a muted,
+  // disconnected or failing microphone or transcript says none is available.
+  const listeningForSpeech =
+    captureActive &&
+    connected &&
+    !paused &&
+    !transcriptIncomplete &&
+    !surfaceError;
   // Stop ends the recording and releases the microphone; saving continues in
   // the background while the window shows its progress.
   const leave = async () => {
@@ -542,9 +552,9 @@ export function VoiceFocusSurface({
                         {t(
                           idle
                             ? m.transcriptPlaceholder
-                            : captureError
-                              ? m.noTranscript
-                              : m.listening,
+                            : listeningForSpeech
+                              ? m.listening
+                              : m.noTranscript,
                         )}
                       </p>
                     ) : null}
