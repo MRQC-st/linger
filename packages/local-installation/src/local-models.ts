@@ -38,6 +38,34 @@ export interface LocalModelsPlanSummary {
   components: string[];
   warnings: string[];
 }
+export interface LocalModelsDegraded {
+  code: string;
+  message: string;
+  reasons?: string[];
+}
+export function localModelsDegradedFromOutcome(
+  outcome: InstallOutcome,
+): LocalModelsDegraded {
+  const details =
+    outcome.details && typeof outcome.details === "object"
+      ? (outcome.details as { code?: unknown; reasons?: unknown })
+      : undefined;
+  const code =
+    typeof details?.code === "string" && details.code.trim()
+      ? details.code.trim()
+      : "LOCAL_MODELS_RECOVERY_REQUIRED";
+  const reasons = Array.isArray(details?.reasons)
+    ? details.reasons.filter(
+        (item): item is string =>
+          typeof item === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(item),
+      )
+    : [];
+  return {
+    code,
+    message: outcome.message || "The local model stack is not ready.",
+    ...(reasons.length ? { reasons } : {}),
+  };
+}
 interface Binding {
   schema: "localmodels.stack-binding/v1";
   ready: boolean;

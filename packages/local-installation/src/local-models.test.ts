@@ -10,6 +10,7 @@ import path from "node:path";
 import os from "node:os";
 import { afterEach, expect, test, vi } from "vitest";
 import {
+  localModelsDegradedFromOutcome,
   prepareLocalModels,
   localModelsEnvironment,
   restoreLocalModels,
@@ -1019,4 +1020,22 @@ test("names what downloads and keeps the tool's counters", () => {
     { ...progress, event: "log" },
   ])
     expect(stackProgress(other)).toBeUndefined();
+});
+
+test("extracts degraded local model details with valid reason codes only", () => {
+  expect(
+    localModelsDegradedFromOutcome({
+      code: 4,
+      state: "action_required",
+      message: "The upstream tool could not verify the local stack binding.",
+      details: {
+        code: "LOCAL_MODELS_RECOVERY_REQUIRED",
+        reasons: ["binding-unavailable", "INVALID REASON", 123],
+      },
+    }),
+  ).toEqual({
+    code: "LOCAL_MODELS_RECOVERY_REQUIRED",
+    message: "The upstream tool could not verify the local stack binding.",
+    reasons: ["binding-unavailable"],
+  });
 });

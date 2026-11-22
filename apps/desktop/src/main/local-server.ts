@@ -2777,6 +2777,31 @@ export class LocalServerModule implements Module {
         message:
           typeof byokGateway.message === "string" ? byokGateway.message : "",
       });
+    // The services run without local models; the person can still reach the
+    // workspace and the Models page to reload them or switch runtimes.
+    const localModelsDegraded = outcome.details?.localModelsDegraded as
+      | { code?: unknown; message?: unknown; reasons?: unknown }
+      | null
+      | undefined;
+    if (
+      localModelsDegraded &&
+      typeof localModelsDegraded === "object" &&
+      typeof localModelsDegraded.code === "string"
+    ) {
+      const degradedReasons = Array.isArray(localModelsDegraded.reasons)
+        ? localModelsDegraded.reasons.filter(
+            (item): item is string => typeof item === "string",
+          )
+        : [];
+      this.#ctx?.log.warn("local_server.local_models_unavailable", {
+        code: localModelsDegraded.code,
+        message:
+          typeof localModelsDegraded.message === "string"
+            ? localModelsDegraded.message
+            : "",
+        ...(degradedReasons.length ? { reasons: degradedReasons } : {}),
+      });
+    }
     this.#adoptRuntime(outcome.runtime);
     const { source, origin } = outcome.details ?? {};
     return {
@@ -2911,6 +2936,8 @@ interface ResumeOutcome {
     reasons?: unknown;
     // Why a saved BYOK source's gateway did not come back: `{ code, message }`.
     byokGateway?: unknown;
+    // Why local models did not come back on resume: `{ code, message, reasons? }`.
+    localModelsDegraded?: unknown;
   };
   runtime?: InstanceRuntime;
 }
@@ -3028,6 +3055,7 @@ interface Job {
   readonly message?: string;
   readonly origin?: string;
   readonly errorCode?: string;
+  readonly errorReasons?: readonly string[];
   // The deployment the installer asks to approve before a local model.
   readonly localModelsPlan?: { readonly planId: string };
   readonly stages: readonly {
@@ -3338,7 +3366,8 @@ export class InstallerApi {
         job.state === "waiting_user" &&
         job.errorCode === "LOCAL_MODELS_RECOVERY_REQUIRED" &&
         plan.runtime === "local" &&
-        !replanned
+        !replanned &&
+        !job.errorReasons?.includes("binding-unavailable")
       ) {
         replanned = true;
         onStep("services", 0, "Deploying the local model");
@@ -3348,16 +3377,22 @@ export class InstallerApi {
         );
         continue;
       }
-      if (!["queued", "running"].includes(job.state))
+      if (!["queued", "running"].includes(job.state)) {
+        const reason = job.errorReasons?.find(
+          (item): item is string =>
+            typeof item === "string" &&
+            Object.hasOwn(LOCAL_MODEL_NOT_READY, item),
+        );
         throw new Error(
           // Only the planner finding no model that fits can be helped by
           // freeing memory; free memory is what it measures at that moment.
           job.errorCode === "LOCAL_MODELS_UNAVAILABLE"
             ? `This computer can't run the local model right now. Close other programs to free memory, or choose another AI runtime, and try again.${job.message ? ` (${job.message})` : ""}`
             : LOCAL_MODEL_FAILURES.has(job.errorCode ?? "")
-              ? `This computer can't run the local model right now. Choose another AI runtime and try again.${job.message ? ` (${job.message})` : ""}`
+              ? `${reason ? `${LOCAL_MODEL_NOT_READY[reason]} ` : ""}This computer can't run the local model right now. Choose another AI runtime and try again.${!reason && job.message ? ` (${job.message})` : ""}`
               : job.message || "The installation stopped",
         );
+      }
       await delay(this.#pollMs, undefined, { signal });
       job = await this.#poll(job.id, signal, () => {
         if (shown) onStep(shown[0], shown[1], "Reconnecting to the installer…");

@@ -417,6 +417,7 @@ export class JobManager {
           computer?: Job["computer"];
           knowledge?: string;
           code?: unknown;
+          reasons?: unknown;
           stage?: unknown;
           localModelsPlan?: unknown;
           runtime?: unknown;
@@ -448,6 +449,13 @@ export class JobManager {
             ].includes(String(details.code)))
         ) {
           record.job.errorCode = String(details.code);
+          if (Array.isArray(details.reasons)) {
+            const reasons = details.reasons.filter(
+              (item): item is string =>
+                typeof item === "string" && /^[a-z][a-z0-9-]{0,63}$/.test(item),
+            );
+            if (reasons.length) record.job.errorReasons = reasons;
+          }
           if (details.code === "LOCAL_MODELS_APPROVAL_REQUIRED") {
             const plan = publicLocalModelsPlan(
               details.localModelsPlan,

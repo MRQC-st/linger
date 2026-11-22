@@ -3,6 +3,7 @@ import path from "node:path";
 
 import { loadInstance } from "@linger/local-installation/instance";
 import {
+  localModelsDegradedFromOutcome,
   restoreByokSource,
   restoreLocalModels,
 } from "@linger/local-installation/local-models";
@@ -95,16 +96,24 @@ export async function resumeSourceInstance(
       signal: options.signal,
       onEvent,
     });
-    if (restored) return restored;
+    // A local model stack that did not come back is reported, not a failed
+    // resume: the person can still reach the workspace and the Models page
+    // to reload it or choose another AI runtime.
+    const localModelsDegraded = restored
+      ? localModelsDegradedFromOutcome(restored)
+      : undefined;
+    if (localModelsDegraded)
+      options.log(
+        `${localModelsDegraded.message} (${localModelsDegraded.code}) Linger is opening without local models; open the Models page to reload them or switch to another AI runtime.\n`,
+      );
     // A gateway that did not come back is reported, not a failed resume:
     // the person can still reach the Models page.
-    const byokGateway = await restoreByok(
-      path.resolve(instance.root, "../.."),
-      {
-        signal: options.signal,
-        onEvent,
-      },
-    );
+    const byokGateway = localModelsDegraded
+      ? undefined
+      : await restoreByok(path.resolve(instance.root, "../.."), {
+          signal: options.signal,
+          onEvent,
+        });
     return {
       code: 0,
       state: "ready",
@@ -113,6 +122,7 @@ export async function resumeSourceInstance(
         origin: instance.origin,
         source: instance.source.repo,
         ...(byokGateway ? { byokGateway } : {}),
+        ...(localModelsDegraded ? { localModelsDegraded } : {}),
       },
     };
   }
