@@ -1733,14 +1733,20 @@ async function performWindowsInstaller(settings, dependencies) {
     : await install(c, installed);
 }
 
+// Windows PowerShell writes a UTF-8 BOM when it pipes a string to a child's
+// stdin. JSON.parse rejects that byte-order mark, so strip it before parsing.
+export const parseWindowsInstallerRequest = (source) =>
+  JSON.parse(source.charCodeAt(0) === 0xfeff ? source.slice(1) : source);
+
 if (
   process.argv[1] &&
   pathToFileURL(path.resolve(process.argv[1])).href === import.meta.url
 ) {
   try {
     let source = "";
+    process.stdin.setEncoding("utf8");
     for await (const chunk of process.stdin) source += chunk;
-    await runWindowsInstaller(JSON.parse(source));
+    await runWindowsInstaller(parseWindowsInstallerRequest(source));
   } catch (error) {
     process.stderr.write(`${error.message}\n`);
     process.exitCode = 1;

@@ -26,6 +26,7 @@ import {
   extractWindowsBundle,
   invoke,
   nativePlatform,
+  parseWindowsInstallerRequest,
   renameWithRetry,
   runWindowsInstaller,
   validateDownloadSource,
@@ -359,6 +360,14 @@ describe("renameWithRetry", () => {
 });
 
 describe("Windows installer trust boundary", () => {
+  it("accepts a UTF-8 BOM on stdin from PowerShell", () => {
+    expect(
+      parseWindowsInstallerRequest('\uFEFF{"operation":"status"}'),
+    ).toEqual({ operation: "status" });
+    expect(parseWindowsInstallerRequest('{"operation":"status"}')).toEqual({
+      operation: "status",
+    });
+  });
   it("drains real child stdout after process exit and rejects oversized output", async () => {
     const size = 1024 * 1024;
     const result = await invoke(
@@ -516,7 +525,10 @@ describe("Windows installer trust boundary", () => {
     }
   });
 
-  it("falls back to per-file checks for daemons without the batch request", async () => {
+  it("falls back to per-file checks for daemons without the batch request", async ({
+    skip,
+  }) => {
+    if (process.platform === "win32") skip();
     const root = await mkdtemp(path.join(os.tmpdir(), "windows-platform-"));
     roots.push(root);
     const daemon = path.join(root, "daemon");
