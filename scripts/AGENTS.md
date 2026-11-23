@@ -19,6 +19,11 @@ Scripts support existing build, generation, and verification entrypoints.
 ## Important Conventions
 
 - Scripts must be idempotent and safe to rerun.
+- Build Local Computer Linux and macOS archives on a Unix host so the tar
+  entries retain executable modes. On Windows, pass `--targets win32-x64`
+  or `--targets win32-arm64` to `prepare-local-computer-release.mjs`.
+- The PowerShell installer loads its built-in cmdlets from the current shell
+  so it works when launched by either Windows PowerShell 5.1 or PowerShell 7.
 - `check-scripts-fast` runs fast-lane files that reference `child_process`
   under `SCRIPT_TEST_PROCESS_TIMEOUT_MS`; pure files keep the 5s Vitest default.
   New process-spawning tests need no per-test timeout for the shared Runner.
