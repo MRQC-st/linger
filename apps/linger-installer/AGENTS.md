@@ -95,7 +95,14 @@ long for Pi without long paths; `RUNTIME_ACTION_FAILED`;
 `RUNTIME_EXTENSIONS_FAILED`), otherwise `INSTALL_FAILED`. With
 `--external-computer`, a successful outcome carries `runtime`, the same instance runtime as
 `GET /api/instances/{name}/runtime` (runtime and localmodels tool paths), so
-the desktop's Computer follows them.
+the desktop's Computer follows them. The HTTP lookup writes one JSON line to
+stderr, `{"event":"installer.runtime_lookup_timings","instance",...,"timings"}`,
+whose `timings` holds `config`, `runtime`, `localModels`, `tool` and `total`
+in ms; the `--resume` outcome carries the same object as
+`runtimeLookupTimings` whenever the lookup ran. The desktop logs both at info
+as `local_server.installer_runtime_timings`, keyed on that event name and
+field shape, which are its contract. The route's response body does not carry
+these timings.
 
 `--stop` (with `--instance`) is the desktop uninstall's and Windows setup's: it stops the
 manager the desktop started for that instance (its `/api/stop` cancels a
