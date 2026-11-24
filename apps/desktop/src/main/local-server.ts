@@ -2447,7 +2447,17 @@ export class LocalServerModule implements Module {
     child.stderr.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       reason = text.trim().slice(0, 1500) || reason;
-      log?.warn("local_server.installer_stderr", { line: text.slice(0, 1500) });
+    });
+    // By line, so a timing event split across chunks still parses.
+    createInterface({ input: child.stderr }).on("line", (line) => {
+      if (!line.trim()) return;
+      const event = installerTimingEvent(line);
+      if (event)
+        log?.info("local_server.installer_runtime_timings", { ...event });
+      else
+        log?.warn("local_server.installer_stderr", {
+          line: line.slice(0, 1500),
+        });
     });
     const origin = await new Promise<string>((resolve, reject) => {
       let output = "";
@@ -2916,6 +2926,14 @@ export class LocalServerModule implements Module {
       stage: "installer_resume",
       ms: Date.now() - resumeStartedAt,
     });
+    const lookupTimings = runtimeLookupTimingFields(
+      outcome.runtimeLookupTimings,
+    );
+    if (lookupTimings)
+      this.#ctx?.log.info("local_server.installer_runtime_timings", {
+        instance: LOCAL_INSTANCE,
+        ...lookupTimings,
+      });
     if (outcome.code !== 0) {
       const { code, causeCode, reasons } = outcome.details ?? {};
       const action =
@@ -3131,6 +3149,58 @@ interface ResumeOutcome {
     localModelsDegraded?: unknown;
   };
   runtime?: InstanceRuntime;
+  // Resume stderr is not piped (detached services could hold it open), so
+  // the runtime lookup's stage timings ride in the outcome instead.
+  runtimeLookupTimings?: unknown;
+}
+
+interface RuntimeLookupTimingFields {
+  config_ms: number;
+  runtime_ms: number;
+  local_models_ms: number;
+  tool_ms: number;
+  total_ms: number;
+}
+
+// The installer's runtime lookup timings, or undefined unless every stage is
+// a finite number; an older or newer installer must never fail the caller.
+function runtimeLookupTimingFields(
+  value: unknown,
+): RuntimeLookupTimingFields | undefined {
+  if (!value || typeof value !== "object") return undefined;
+  const { config, runtime, localModels, tool, total } = value as Record<
+    string,
+    unknown
+  >;
+  const stages = [config, runtime, localModels, tool, total];
+  if (!stages.every((ms) => typeof ms === "number" && Number.isFinite(ms)))
+    return undefined;
+  return {
+    config_ms: config as number,
+    runtime_ms: runtime as number,
+    local_models_ms: localModels as number,
+    tool_ms: tool as number,
+    total_ms: total as number,
+  };
+}
+
+// The installer's `installer.runtime_lookup_timings` stderr event as log
+// fields, keyed on the event name rather than the line's wording.
+function installerTimingEvent(
+  line: string,
+): (RuntimeLookupTimingFields & { instance?: string }) | undefined {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(line);
+  } catch {
+    return undefined;
+  }
+  if (!parsed || typeof parsed !== "object") return undefined;
+  const { event, instance, timings } = parsed as Record<string, unknown>;
+  if (event !== "installer.runtime_lookup_timings") return undefined;
+  const fields = runtimeLookupTimingFields(timings);
+  if (!fields) return undefined;
+  return { ...(typeof instance === "string" ? { instance } : {}), ...fields };
 }
 
 function parseResumeOutcomeLine(line: string): ResumeOutcome | undefined {

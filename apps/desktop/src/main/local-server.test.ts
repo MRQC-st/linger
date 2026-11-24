@@ -206,7 +206,10 @@ if (args.includes("--resume")) {
   const originFile = path.join(home, "resume-origin");
   const origin = fs.existsSync(originFile) ? fs.readFileSync(originFile, "utf8") : "http://localhost:3000";
   const outcome = failure ? JSON.parse(failure) : { message: code ? "Native teamhub stopped" : "ok", details: { source, origin } };
-  process.stdout.write("noise\n" + JSON.stringify({ code, ...outcome, ...(runtime ? { runtime } : {}) }) + "\n");
+  // resume-timings.json holds the outcome's runtimeLookupTimings.
+  const timingsFile = path.join(home, "resume-timings.json");
+  const runtimeLookupTimings = fs.existsSync(timingsFile) ? JSON.parse(fs.readFileSync(timingsFile, "utf8")) : undefined;
+  process.stdout.write("noise\n" + JSON.stringify({ code, ...outcome, ...(runtime ? { runtime } : {}), ...(runtimeLookupTimings ? { runtimeLookupTimings } : {}) }) + "\n");
   process.exit(code);
 }
 if (fs.existsSync(path.join(home, "start-refused"))) {
@@ -215,6 +218,9 @@ if (fs.existsSync(path.join(home, "start-refused"))) {
   process.stderr.write("Installer could not start (WINDOWS_PRIVATE_PATH_UNSAFE): Windows private path validation failed\n");
   process.exit(1);
 }
+// serve-stderr holds what the serving installer writes to stderr.
+const serveStderr = path.join(home, "serve-stderr");
+if (fs.existsSync(serveStderr)) process.stderr.write(fs.readFileSync(serveStderr, "utf8"));
 const origin = "http://127.0.0.1:4321";
 fs.writeFileSync(
   path.join(home, "installer", "launch.html"),
@@ -2361,6 +2367,55 @@ describe("LocalServerModule", () => {
     await f.host.stop("quit");
   });
 
+  it("logs the serving installer's timing events at info and other stderr at warn", async () => {
+    const f = fixture(withCheckout, {}, (home) => {
+      checkout(home);
+      writeFileSync(
+        path.join(home, "serve-stderr"),
+        `${JSON.stringify({
+          event: "installer.runtime_lookup_timings",
+          instance: "desktop",
+          timings: {
+            config: 1,
+            runtime: 2,
+            localModels: 3,
+            tool: 4,
+            total: 10,
+          },
+        })}\nSomething else\n`,
+      );
+    });
+    const info = vi.spyOn(silentLog, "info");
+    const warn = vi.spyOn(silentLog, "warn");
+    await f.host.start();
+    await f.module.begin({ runtime: "claude" });
+    await vi.waitFor(() =>
+      expect(warn).toHaveBeenCalledWith("local_server.installer_stderr", {
+        line: "Something else",
+      }),
+    );
+    expect(info).toHaveBeenCalledWith(
+      "local_server.installer_runtime_timings",
+      {
+        instance: "desktop",
+        config_ms: 1,
+        runtime_ms: 2,
+        local_models_ms: 3,
+        tool_ms: 4,
+        total_ms: 10,
+      },
+    );
+    expect(warn).not.toHaveBeenCalledWith(
+      "local_server.installer_stderr",
+      expect.objectContaining({
+        line: expect.stringContaining("runtime_lookup_timings"),
+      }),
+    );
+    info.mockRestore();
+    warn.mockRestore();
+    await f.host.stop("quit");
+  });
+
   it("enrolls this computer again, once, after the installer set the earlier Simplex data aside", async () => {
     const backup = (home: string) =>
       path.join(
@@ -3093,6 +3148,63 @@ describe("LocalServerModule after a restart", () => {
     );
     expect(args[args.indexOf("--instance") + 1]).toBe(LOCAL_INSTANCE);
     expect(f.signIn).not.toHaveBeenCalled();
+    await f.host.stop("quit");
+  });
+
+  it("logs the runtime lookup timings a resume outcome carries", async () => {
+    const f = fixture({}, enrolled, (home) => {
+      record(home);
+      writeFileSync(
+        path.join(home, "resume-timings.json"),
+        JSON.stringify({
+          config: 1,
+          runtime: 2,
+          localModels: 3,
+          tool: 4,
+          total: 10,
+        }),
+      );
+    });
+    const info = vi.spyOn(silentLog, "info");
+    await f.host.start();
+    await waitForInstaller(() => expect(f.module.status().phase).toBe("ready"));
+    expect(info).toHaveBeenCalledWith(
+      "local_server.installer_runtime_timings",
+      {
+        instance: LOCAL_INSTANCE,
+        config_ms: 1,
+        runtime_ms: 2,
+        local_models_ms: 3,
+        tool_ms: 4,
+        total_ms: 10,
+      },
+    );
+    info.mockRestore();
+    await f.host.stop("quit");
+  });
+
+  it("ignores malformed runtime lookup timings in a resume outcome", async () => {
+    const f = fixture({}, enrolled, (home) => {
+      record(home);
+      writeFileSync(
+        path.join(home, "resume-timings.json"),
+        JSON.stringify({
+          config: "1",
+          runtime: 2,
+          localModels: 3,
+          tool: 4,
+          total: 10,
+        }),
+      );
+    });
+    const info = vi.spyOn(silentLog, "info");
+    await f.host.start();
+    await waitForInstaller(() => expect(f.module.status().phase).toBe("ready"));
+    expect(info).not.toHaveBeenCalledWith(
+      "local_server.installer_runtime_timings",
+      expect.anything(),
+    );
+    info.mockRestore();
     await f.host.stop("quit");
   });
 
